@@ -1,0 +1,14 @@
+build*/
+.venv/
+__pycache__/
+*.mod
+*.o
+*.so
+.ipynb_checkpoints/
+# never commit results, data or legacy material
+runs/
+out/
+*.txt
+!requirements*.txt
+private/
+*.egg-info/
