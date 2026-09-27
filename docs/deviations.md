@@ -15,6 +15,7 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 | D-7 | candidate | One linearized solve per time step (no Newton iteration); nonlinearity error is not controlled |
 | D-8 | candidate | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
 | D-9 | candidate | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
+| D-11 | confirmed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
 | D-10 | confirmed | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
 
 ## D-1. Li-foil face solid-potential row sign
@@ -76,3 +77,15 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
 
 - **Where:** `write_all_voltage`, L406, L410, L414, L422.
 - **Evidence (T3):** a `-fcheck=bounds` build stops at L414: `Index '-39' of dimension 2 of array 'cprev' below lower bound of 1`. The values read (`cs_NJ_2`, and `c0` at L422) are unused or overwritten before use (L464), so results are unaffected. It is still undefined behaviour and must not be ported. The same pattern appears in the NMC sources (numerical audit §8.36).
+
+## D-11. Diffusion current missing from the ionic-current residual
+
+- **Where:** row 3 of the separator interior (L1576–L1578), the separator/cathode interface (L1352–L1354) and the cathode interior (L1664–L1666).
+- **What:** the Jacobian includes the diffusion part of the ionic current, `−εF(z₊D₊+z₋D₋)/τ ∂c/∂x` (coefficients `dW(3,1)`, `dE(3,1)`). The residual `smG(3)`, however, contains only the migration part (`dW(3,3)·dcdxW(3)`, `dE(3,3)·dcdxE(3)`). With one linear solve per step, the equation actually enforced is `i_mig(c_new) + [i_diff(c_new) − i_diff(c_old)] = source`. The diffusion current enters only through its change over one step, so in practice the model uses Ohm's law, `i₂ = −κ ∂Φ₂/∂x`, and drops the diffusion potential. The collector row (L1444) is the only one that includes the diffusion term.
+- **Evidence (T3, private instrumented 1C run):** on the separator face between nodes 11 and 12, after start-up:
+  - migration current = **0.780 I**, which is the ε_sep/ε factor of D-2, so this is the quantity the model conserves
+  - diffusion current = −1.170 I
+  - the full dilute-solution current is −0.39 I instead of I
+
+  For a binary electrolyte with t₊ = 0.25 and zero anion flux, a consistent solution has migration = 2 I and diffusion = −I. The electrolyte potential gradient in the archived model is therefore about 2.6 times too small in the separator, and the concentration and potential fields are mutually inconsistent.
+- **Fix in corrected mode:** include the full current in every residual row. Check it with a steady-state test (zero anion flux, so i₂ = F N₊ in the separator) and with `check_jacobian`, which cannot catch this defect alone because the Jacobian is right and the residual is wrong. A residual-consistency test is needed: G must equal −F(c) computed independently.
