@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _exe(env_name, default):
     p = Path(os.environ.get(env_name, ROOT / default))
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
     return p if p.is_file() and os.access(p, os.X_OK) else None
 
 

@@ -415,21 +415,3 @@ def _run_protocol(p: Params, *, backend: str, pivot: str, max_steps: Optional[in
     res.exit_reason = reason if len(steps) == 1 else "end_of_protocol"
     res.steps, res.final_state = n_done, c
     return res
-
-
-def main(argv=None) -> int:
-    import argparse
-    ap = argparse.ArgumentParser(description="Run the LFP model (constant-current discharge).")
-    ap.add_argument("--c-rate", type=float, default=1.0)
-    ap.add_argument("--mode", choices=("faithful", "corrected"), default="faithful")
-    ap.add_argument("--out", default="Time_Voltage.txt")
-    args = ap.parse_args(argv)
-    p = Params.faithful(C_rate=args.c_rate) if args.mode == "faithful" else Params(C_rate=args.c_rate, mode="corrected")
-    r = run(p)
-    r.write(args.out)
-    print(f"exit: {r.exit_reason} after {r.steps} steps; wrote {args.out}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
