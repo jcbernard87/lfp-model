@@ -41,13 +41,41 @@ def ocp(p: Params, cs):
     return a0 + a1 * np.arctan(-(b1 * th) + c1) - a2 * np.arctan(-(b2 * th) + c2)
 
 
+THETA_REG = 1.0e-6   # corrected mode: below this lithiation (or vacancy) fraction, x^alpha is regularized
+
+
+def _power_reg(x, alpha, delta):
+    """x**alpha for x >= delta; below it the C1 quadratic delta**alpha*((2-alpha)u + (alpha-1)u**2), u = x/delta.
+
+    It keeps g(0) = 0 with a finite slope, so Newton's method stays well posed when a particle
+    empties or fills completely (deviation D-13). Returns (g, dg/dx).
+    """
+    x = np.asarray(x, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        u = x / delta
+        lo = x < delta
+        g = np.where(lo, delta ** alpha * ((2.0 - alpha) * u + (alpha - 1.0) * u * u), x ** alpha)
+        dg = np.where(lo, delta ** (alpha - 1.0) * ((2.0 - alpha) + 2.0 * (alpha - 1.0) * u), alpha * x ** (alpha - 1.0))
+    return g, dg
+
+
 def exchange_current(p: Params, c, cs):
     """i0 = F k c^aa (cs_max - cs)^aa cs^ac [A/cm2]."""
-    with np.errstate(invalid="ignore"):
-        i0 = p.F * p.k_rxn * (c ** p.alpha_a) * ((cs_max(p) - cs) ** p.alpha_a) * (cs ** p.alpha_c)
     if p.mode == "faithful":
-        i0 = np.asarray(i0, dtype=np.float32).astype(np.float64)
-    return i0
+        with np.errstate(invalid="ignore"):
+            i0 = p.F * p.k_rxn * (c ** p.alpha_a) * ((cs_max(p) - cs) ** p.alpha_a) * (cs ** p.alpha_c)
+        return np.asarray(i0, dtype=np.float32).astype(np.float64)
+    return exchange_current_and_slope(p, c, cs)[0]
+
+
+def exchange_current_and_slope(p: Params, c, cs):
+    """Corrected-mode i0 and d(i0)/dcs, with the solid-concentration powers regularized (D-13)."""
+    delta = THETA_REG * cs_max(p)
+    gv, dgv = _power_reg(cs_max(p) - cs, p.alpha_a, delta)
+    gs, dgs = _power_reg(cs, p.alpha_c, delta)
+    with np.errstate(invalid="ignore"):
+        pre = p.F * p.k_rxn * (c ** p.alpha_a)
+    return pre * gv * gs, pre * (gs * -dgv + gv * dgs)
 
 
 def reaction_rate(p: Params, c, cs, phi1, phi2):
@@ -94,13 +122,13 @@ def reaction_derivatives_analytic(p: Params, c, cs, phi1, phi2):
     rt = p.R * p.T
     A_, B_ = p.alpha_a * p.F / rt, p.alpha_c * p.F / rt
     eta = phi1 - phi2 - ocp(p, cs)
-    i0 = exchange_current(p, c, cs)
+    i0, di0_dcs = exchange_current_and_slope(p, c, cs)
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         ea, ec = np.exp(A_ * eta), np.exp(-B_ * eta)
         i = i0 * (ea - ec)
         di_deta = i0 * (A_ * ea + B_ * ec)
         d_c = p.alpha_a * i / c
-        d_cs = i * (-p.alpha_a / (cs_max(p) - cs) + p.alpha_c / cs) - di_deta * ocp_slope(p, cs)
+        d_cs = di0_dcs * (ea - ec) - di_deta * ocp_slope(p, cs)
     return i, d_c, d_cs, di_deta, -di_deta
 
 

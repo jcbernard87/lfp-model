@@ -66,6 +66,10 @@ class Params:
     fd_step: float = 1.0e-6        # absolute step of the finite-difference reaction derivatives
     newton_tol: float = 1.0e-10    # corrected mode: scaled update tolerance per time step (D-7)
     newton_max_iter: int = 25
+    # --- protocol and output (corrected mode; docs/protocol.md) ---
+    steps: str = ""                # empty: classic discharge at C_rate
+    cycles: int = 1
+    write_interval: float = 18.0   # [s]
     mode: str = "faithful"
 
     def __post_init__(self):
@@ -107,6 +111,16 @@ class Params:
     @property
     def tortuosity(self) -> float:
         return self.eps ** self.bruggeman
+
+    @property
+    def mass_area(self) -> float:
+        """Active-material loading [g/cm2]."""
+        return self.L_cath * self.eps_AM * self.rho
+
+    @property
+    def i_1C(self) -> float:
+        """1C current density [A/cm2]."""
+        return self.Q_th * self.mass_area
 
     @property
     def i_specific(self) -> float:

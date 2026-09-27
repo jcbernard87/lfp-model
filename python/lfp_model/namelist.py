@@ -26,7 +26,8 @@ GROUPS = {
     "constants": ["R", "T", "F"],
     "operation": ["C_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps", "V_min", "V_max"],
     "numerics": ["fd_step", "newton_tol", "newton_max_iter", "mode"],
-    "output": ["file"],
+    "protocol": ["steps", "cycles"],
+    "output": ["file", "write_interval"],
 }
 
 # Values the original program stored from single-precision literals (deviation D-4).
@@ -92,12 +93,14 @@ def load(path) -> tuple[Params, dict]:
             if key not in known[group]:
                 raise ValueError(f"unknown name {key!r} in &{group}")
             name = known[group][key]
-            (extra if group == "output" else values)[name] = val
+            (extra if name == "file" else values)[name] = val
     mode = values.pop("mode", "faithful")
     types = {f.name: f.type for f in fields(Params)}
     for name, val in list(values.items()):
         if types[name] in ("int", int):
             values[name] = int(val)
+        elif types[name] in ("str", str):
+            values[name] = str(val)
         else:
             values[name] = float(val)
     if mode == "faithful":

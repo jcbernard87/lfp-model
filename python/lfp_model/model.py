@@ -12,6 +12,7 @@ the BAND blocks A, B, D, G with A dc[j-1] + B dc[j] + D dc[j+1] = G.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -120,12 +121,13 @@ class Assembler:
         return T
 
     # -- assembly ----------------------------------------------------------------
-    def assemble(self, c: np.ndarray, dt: float):
-        """Return (A, B, D, G, i_rxn) for state c with shape (nj, 4)."""
+    def assemble(self, c: np.ndarray, dt: float, I: Optional[float] = None):
+        """Return (A, B, D, G, i_rxn) for state c with shape (nj, 4) and applied current I [A/cm2]."""
         p, m = self.p, self.mesh
         nj, s = m.nj, m.s
         F, a = p.F, p.spec_a
-        I = p.i_app
+        if I is None:
+            I = p.i_app
 
         # face values and gradients
         cW = np.zeros((nj, N)); cE = np.zeros((nj, N)); gW = np.zeros((nj, N)); gE = np.zeros((nj, N))

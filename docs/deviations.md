@@ -15,6 +15,8 @@ The faithful mode (`mode = "faithful"`) reproduces the original program, includi
 | D-7 | each backward-Euler step is solved with Newton's method (scaled update ≤ 10⁻¹⁰), with the step limited to 0.1 V of potential change per iteration and sub-step halving on failure |
 | D-10 | the out-of-bounds read is not ported |
 | D-11 | the ionic-current residual includes the diffusion current |
+| D-12 | the Li counter electrode is a symmetric Butler–Volmer interface, η = (RT/(αF))·asinh(I/(2i₀)) |
+| D-13 | below θ = 10⁻⁶ (or 1 − θ < 10⁻⁶), c_s^α is replaced by a C¹ quadratic with a finite slope; results above that threshold are unchanged |
 
 Status values: **candidate** (suspected from reading the source), **confirmed** (demonstrated by a test or run), **fixed**, **kept** (reviewed and left as is, with the reason).
 
@@ -30,6 +32,8 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 | D-8 | kept (not ported; see §D-8) | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
 | D-9 | candidate | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
 | D-11 | fixed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
+| D-12 | fixed (needs author confirmation) | The lithium-anode overpotential (RT/F)·ln(I/i₀) is singular at zero current and is half the Butler–Volmer slope for α = 0.5 |
+| D-13 | added (corrected mode) | The exchange current's c_s^α factors have an infinite slope at an empty or full particle, which makes Newton's method ill-posed |
 | D-10 | fixed (not ported) | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
 
 ## D-1. Li-foil face solid-potential row sign
@@ -103,3 +107,22 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
 
   For a binary electrolyte with t₊ = 0.25 and zero anion flux, a consistent solution has migration = 2 I and diffusion = −I. The electrolyte potential gradient in the archived model is therefore about 2.6 times too small in the separator, and the concentration and potential fields are mutually inconsistent.
 - **Fix in corrected mode:** include the full current in every residual row. Check it with a steady-state test (zero anion flux, so i₂ = F N₊ in the separator) and with `check_jacobian`, which cannot catch this defect alone because the Jacobian is right and the residual is wrong. A residual-consistency test is needed: G must equal −F(c) computed independently.
+
+## D-12. Lithium counter-electrode overpotential
+
+- **Where:** `write_all_voltage` (L560–L571); it affects only the reported cell voltage, since the counter electrode is not part of the solved system.
+- **What:** on discharge the original adds η = −0.5·ln(I/i₀,Li)/(αF/RT) = −(RT/F)·ln(I/i₀,Li), with α = 0.5. This is
+  - singular at I = 0 (a rest or a constant-voltage taper would give ±∞)
+  - negative for I < i₀,Li, where it should vanish at zero current
+  - half the Tafel slope of a Butler–Volmer interface with α = 0.5, since the Tafel limit is (RT/(αF))·ln(I/i₀) = 2(RT/F)·ln(I/i₀)
+- **Fix in corrected mode:** symmetric Butler–Volmer inverted exactly, η = −(RT/(αF))·asinh(I/(2 i₀,Li)). It is zero at I = 0, and for I ≫ i₀ it tends to the Tafel form.
+- **Effect:** at 1C (I/i₀ = 12.2) the anode overpotential is −128 mV instead of −64 mV, so corrected-mode cell voltages are about 64 mV lower at 1C, 72 mV at 2C and 40 mV at 0.1C. This is a modelling choice the author should confirm. The original factor 0.5 might have been intended, for example as an empirical adjustment.
+
+## D-13. Regularized exchange current near an empty or full particle (corrected mode)
+
+- **What:** i₀ ∝ c_s^α_c (c_s,max − c_s)^α_a has d(i₀)/dc_s → ∞ as c_s → 0 or c_s,max. When particles near the collector empty completely during a charge, their Jacobian rows become dominated by that slope (condition number about 4 × 10¹⁶) and the linear solve fails.
+- **Change:** for x = c_s or c_s,max − c_s below δ = 10⁻⁶ c_s,max, x^α is replaced by δ^α[(2−α)u + (α−1)u²] with u = x/δ. This matches x^α and its slope at x = δ and gives g(0) = 0 with a finite slope. Results are unchanged whenever 10⁻⁶ < θ < 1 − 10⁻⁶. The original starts at θ₀ = 4.4 × 10⁻⁴.
+- **Related numerics (corrected mode):**
+  - Rows are equilibrated before each solve (scaled by their largest entry in B).
+  - Voltage cutoffs are located to within 0.1 mV by halving the sub-step.
+  - A constant-voltage step treats a current the cell cannot sustain for the whole step as lying beyond the set voltage, and brackets the root.
