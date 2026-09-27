@@ -367,9 +367,13 @@ struct Model {
         return T;
     }
     // largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound)
+    // and changing no potential by more than 0.1 V (Butler-Volmer exponentials make Newton overshoot)
     double bounded_step(const std::vector<double>& c, const std::vector<double>& d) const {
-        const double keep = 0.9, csm = cs_max();
-        double lam = 1.0;
+        const double keep = 0.9, csm = cs_max(), max_dphi = 0.1;  // potential change cap per iteration [V]
+        double lam = 1.0, dphi = 0.0;
+        for (int j = 0; j < p.nj; ++j)
+            dphi = std::max({dphi, std::abs(d[j * NV + IP1]), std::abs(d[j * NV + IP2])});
+        if (dphi > max_dphi) lam = max_dphi / dphi;
         for (int j = 0; j < p.nj; ++j) {
             const double dcc = d[j * NV + IC], dcs = d[j * NV + ICS];
             if (dcc < 0) lam = std::min(lam, keep * (c[j * NV + IC] - 0.0) / -dcc);
@@ -424,7 +428,7 @@ struct Model {
                 dE[IC][IP2] = -(eps_sep_face * p.z_plus * ucat_s * F * cE[IC]);
                 g[IC] = -i_app / F + (dE[IC][IC] * gE[IC] + fE[IC][IC] * cE[IC]);
                 rj[ICS][ICS] = 0.0 - 1.0 * p.eps_AM / dt;
-                dE[IP1][IP1] = -(1.0 - eps) * sig;
+                dE[IP1][IP1] = -(1.0 - eps_sep_face) * sig;
                 g[IP1] = phi1_sign * dE[IP1][IP1] * gE[IP1];
                 rj[IP2][IP2] = 1.0;
                 g[IP2] = 0.0 - C(j, IP2);
@@ -442,7 +446,7 @@ struct Model {
                 face(eps_sep_face, dcat_s, ucat_s, dan_s, uan_s, cW[IC], gW[IP2], dW, fW);
                 face(eps, dcat_c, ucat_c, dan_c, uan_c, cE[IC], gE[IP2], dE, fE);
                 g[IC] = 0.0 - (fW[IC][IC] * cW[IC] + dW[IC][IC] * gW[IC]) + (fE[IC][IC] * cE[IC] + dE[IC][IC] * gE[IC]);
-                dW[IP1][IP1] = -(1.0 - eps) * sig;
+                dW[IP1][IP1] = -(1.0 - eps_sep_face) * sig;
                 dE[IP1][IP1] = -(1.0 - eps) * sig;
                 g[IP1] = 0.0 - (fW[IP1][IP1] * cW[IP1] + dW[IP1][IP1] * gW[IP1]) + (fE[IP1][IP1] * cE[IP1] + dE[IP1][IP1] * gE[IP1]);
                 g[IP2] = 0.0 - current(fW, dW, cW, gW) + current(fE, dE, cE, gE);

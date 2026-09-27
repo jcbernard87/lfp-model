@@ -372,13 +372,18 @@ contains
     end subroutine time_terms
 
     real(dp) function bounded_step(dcc)
-        !! Largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound).
+        !! Largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound)
+        !! and changing no potential by more than 0.1 V (Butler-Volmer exponentials make Newton overshoot).
         real(dp), intent(in) :: dcc(NV,nj)
         real(dp), parameter :: keep = 0.9_dp
         real(dp) :: csm
         integer :: j
+        real(dp), parameter :: max_dphi = 0.1_dp   ! largest potential change per iteration [V]
+        real(dp) :: dphi
         csm = cs_max()
         bounded_step = 1.0_dp
+        dphi = maxval(abs(dcc(IP1:IP2,:)))
+        if (dphi > max_dphi) bounded_step = max_dphi/dphi
         do j = 1, nj
             if (dcc(IC,j) < 0) bounded_step = min(bounded_step, keep*(c(IC,j) - 0.0_dp)/(-dcc(IC,j)))
             if (dcc(ICS,j) < 0) bounded_step = min(bounded_step, keep*(c(ICS,j) - 0.0_dp)/(-dcc(ICS,j)))
@@ -486,7 +491,7 @@ contains
                 dE(IC,IP2) = -(eps_sep_face*z_plus*ucat_s*F*cE(IC))
                 gg(IC) = -i_app/F + (dE(IC,IC)*gE(IC) + fE(IC,IC)*cE(IC))
                 rj(ICS,ICS) = 0.0_dp - 1.0_dp*eps_AM/dt
-                dE(IP1,IP1) = -(1.0_dp - eps)*sigma
+                dE(IP1,IP1) = -(1.0_dp - eps_sep_face)*sigma
                 gg(IP1) = phi1_sign*dE(IP1,IP1)*gE(IP1)
                 rj(IP2,IP2) = 1.0_dp
                 gg(IP2) = 0.0_dp - c(IP2,j)
@@ -509,7 +514,7 @@ contains
                 call face_coeffs(eps_sep_face, dcat_s, ucat_s, dan_s, uan_s, cW(IC), gW(IP2), dW, fW)
                 call face_coeffs(eps, dcat_c, ucat_c, dan_c, uan_c, cE(IC), gE(IP2), dE, fE)
                 gg(IC) = 0.0_dp - (fW(IC,IC)*cW(IC) + dW(IC,IC)*gW(IC)) + (fE(IC,IC)*cE(IC) + dE(IC,IC)*gE(IC))
-                dW(IP1,IP1) = -(1.0_dp - eps)*sigma
+                dW(IP1,IP1) = -(1.0_dp - eps_sep_face)*sigma
                 dE(IP1,IP1) = -(1.0_dp - eps)*sigma
                 gg(IP1) = 0.0_dp - (fW(IP1,IP1)*cW(IP1) + dW(IP1,IP1)*gW(IP1)) &
                                  + (fE(IP1,IP1)*cE(IP1) + dE(IP1,IP1)*gE(IP1))

@@ -110,9 +110,16 @@ def newton_step(asm: Assembler, c_old: np.ndarray, dt: float, *, backend: str = 
     raise SolverFailure(f"Newton did not converge in {p.newton_max_iter} iterations")
 
 
+MAX_DPHI = 0.1   # largest potential change per Newton iteration [V]
+
+
 def _bounded_step(c, dc, csmax, keep=0.9):
-    """Largest step length <= 1 keeping 0 < c, 0 < cs < cs_max (moves at most `keep` of the way to a bound)."""
+    """Largest step length <= 1 keeping 0 < c, 0 < cs < cs_max (moves at most `keep` of the way to a bound)
+    and changing no potential by more than MAX_DPHI (Butler-Volmer exponentials make Newton overshoot)."""
     lam = 1.0
+    dphi = float(np.max(np.abs(dc[:, P1:P2 + 1])))
+    if dphi > MAX_DPHI:
+        lam = MAX_DPHI / dphi
     for col, lo, hi in ((C, 0.0, None), (CS, 0.0, csmax)):
         x, d = c[:, col], dc[:, col]
         with np.errstate(divide="ignore", invalid="ignore"):

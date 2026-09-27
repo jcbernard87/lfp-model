@@ -183,7 +183,7 @@ class Assembler:
         dE[j0, C, C] = d11; fE[j0, C, C] = f11; dE[j0, C, P2] = d13
         g[j0, C] = -I / F + (dE[j0, C, C] * gE[j0, C] + fE[j0, C, C] * cE[j0, C])
         rj[j0, CS, CS] = 0.0 - 1.0 * p.eps_AM / dt
-        dE[j0, P1, P1] = -(1.0 - eps) * sig
+        dE[j0, P1, P1] = -(1.0 - self.eps_sep_face) * sig
         g[j0, P1] = self.phi1_row_sign * dE[j0, P1, P1] * gE[j0, P1]
         rj[j0, P2, P2] = 1.0
         g[j0, P2] = 0.0 - c[j0, P2]
@@ -202,7 +202,7 @@ class Assembler:
         ji = slice(s, s + 1)
         west(None, self.eps_sep_face, tS, ji); east(None, eps, tC, ji)
         g[ji, C] = 0.0 - flux_W(ji, C, C) + flux_E(ji, C, C)
-        dW[ji, P1, P1] = -(1.0 - eps) * sig; dE[ji, P1, P1] = -(1.0 - eps) * sig
+        dW[ji, P1, P1] = -(1.0 - self.eps_sep_face) * sig; dE[ji, P1, P1] = -(1.0 - eps) * sig
         g[ji, P1] = 0.0 - flux_W(ji, P1, P1) + flux_E(ji, P1, P1)
         g[ji, P2] = 0.0 - current_W(ji) + current_E(ji)
 

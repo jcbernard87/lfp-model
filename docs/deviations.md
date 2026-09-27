@@ -2,21 +2,35 @@
 
 The faithful mode (`mode = "faithful"`) reproduces the original program, including every item below. The corrected mode (`mode = "corrected"`, the default once T8 is done) applies the fixes marked **fixed**. Each fix is a separate commit that states the effect on results.
 
+**Corrected mode (2026-09-27).** The fixes below are in all three implementations. [validation.md](validation.md) §4 gives each fix's measured effect on a 1C discharge:
+
+| ID | Fix in corrected mode |
+|---|---|
+| D-1 | the Li-face row imposes (∂Φ₁/∂x)_new = 0 |
+| D-2 | every separator face uses ε_sep, for the ion fluxes and for the (inactive) separator solid phase |
+| D-3 | voltage cutoffs `V_min`/`V_max` are checked after every Newton sub-step; bound-preserving steps keep 0 < c_s < c_s,max |
+| D-4 | intended decimal values, double precision throughout, float-valued output timer (rows every 18 s) |
+| D-5 | the discarded Redlich–Kister sum is not ported |
+| D-6 | analytic reaction derivatives, including dU/dθ |
+| D-7 | each backward-Euler step is solved with Newton's method (scaled update ≤ 10⁻¹⁰), with the step limited to 0.1 V of potential change per iteration and sub-step halving on failure |
+| D-10 | the out-of-bounds read is not ported |
+| D-11 | the ionic-current residual includes the diffusion current |
+
 Status values: **candidate** (suspected from reading the source), **confirmed** (demonstrated by a test or run), **fixed**, **kept** (reviewed and left as is, with the reason).
 
 | ID | Status | Summary |
 |---|---|---|
-| D-1 | confirmed (latent) | Li-foil face (j = 1): the solid-potential row doubles the old gradient instead of zeroing it |
-| D-2 | confirmed | Separator faces next to the boundary nodes use the cathode porosity `ε`: the separator transports as if ε = 0.5 while storing with ε_sep = 0.39, and 0.52 % of the salt is lost during start-up |
-| D-3 | confirmed | No voltage cutoff: every discharge ends on a NaN |
-| D-4 | confirmed | Precision and typing: single-precision literals, implicitly single-precision `ex_1`, implicitly integer `last_write_time` |
-| D-5 | candidate | The OCP routine computes and discards a 31-term Redlich–Kister sum on every call |
-| D-6 | candidate | Reaction derivatives use absolute FD steps of 10⁻⁶ (≈ 4 % of c_s,max, 100 % of the initial c_s) |
-| D-7 | candidate | One linearized solve per time step (no Newton iteration); nonlinearity error is not controlled |
-| D-8 | candidate | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
+| D-1 | fixed | Li-foil face (j = 1): the solid-potential row doubles the old gradient instead of zeroing it |
+| D-2 | fixed | Separator faces next to the boundary nodes use the cathode porosity `ε`: the separator transports as if ε = 0.5 while storing with ε_sep = 0.39, and 0.52 % of the salt is lost during start-up |
+| D-3 | fixed | No voltage cutoff: every discharge ends on a NaN |
+| D-4 | fixed | Precision and typing: single-precision literals, implicitly single-precision `ex_1`, implicitly integer `last_write_time` |
+| D-5 | fixed (not ported) | The OCP routine computes and discards a 31-term Redlich–Kister sum on every call |
+| D-6 | fixed | Reaction derivatives use absolute FD steps of 10⁻⁶ (≈ 4 % of c_s,max, 100 % of the initial c_s) |
+| D-7 | fixed | One linearized solve per time step (no Newton iteration); nonlinearity error is not controlled |
+| D-8 | kept (not ported; see §D-8) | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
 | D-9 | candidate | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
-| D-11 | confirmed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
-| D-10 | confirmed | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
+| D-11 | fixed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
+| D-10 | fixed (not ported) | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
 
 ## D-1. Li-foil face solid-potential row sign
 
