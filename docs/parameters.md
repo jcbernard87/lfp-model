@@ -38,7 +38,7 @@ These are the default values in the original research code. The source line (`L�
 | derived `cimax` | c_s,max | ρ Q_th · 3600/F ≈ 0.02283 | mol/cm³ | L233 | |
 | `xmax_c` | R_p | 200 × 10⁻⁷ | cm | L96 | particle radius (200 nm); sets `a` |
 | derived `spec_a` | a | 3 ε_AM/R_p = 1.2 × 10⁵ | cm⁻¹ | L127 | |
-| `rxn_k` | k | 10⁻⁸ · 10^0.966 = 9.246981620788575 × 10⁻⁸ | mol^(−1/2)·cm^(5/2)/s | L98 | 10^0.966 is evaluated in single precision |
+| `rxn_k` | k | 10⁻⁸ · 10^0.966 (stored 10⁻⁸ × 9.24698257446289) | mol^(−1/2)·cm^(5/2)/s | L98 | 10^0.966 is evaluated in single precision, with the exponent itself rounded to float32 first; confirmed by the byte-exact faithful reproduction |
 | `alpha_a`, `alpha_c` | α_a, α_c | 0.5, 0.5 | | L148 | |
 | `diff_c` | D_s | 8.0 × 10⁻¹⁴ | cm²/s | L97 | used only by the inactive crystal scale |
 
@@ -55,7 +55,7 @@ These are the default values in the original research code. The source line (`L�
 
 | Name | Value | Unit | Source | Notes |
 |---|---|---|---|---|
-| `C_rate` | 0.1, 0.2, 0.5, 1, 2 in the archived runs | 1/h | L116 | set by the run generator |
+| `C_rate` | 0.1, 0.2, 0.5, 1, 2 in the archived runs | 1/h | L116 | set by the run generator as a single-precision literal, so 0.1 and 0.2 are stored as 0.10000000149… and 0.20000000298… |
 | derived `c_specific` | Q_th × C_rate | A/g | L130 | |
 | derived `c_density` | I = c_specific · L_cath · ε_AM · ρ | A/cm² | L131 | 1.175 × 10⁻³ A/cm² at 1C |
 | `Phi_1_init` | 3.6 (stored 3.5999999046325684) | V | L79 | |
