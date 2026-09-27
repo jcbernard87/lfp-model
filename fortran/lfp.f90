@@ -31,7 +31,10 @@ program lfp
     real(dp) :: C_rate = 1.0_dp, phi1_init = 3.6_dp, phi2_init = 0.0_dp, cs_init = 1.0e-5_dp
     real(dp) :: t_max = 36000.0_dp
     integer  :: n_steps = 36000
+    real(dp) :: V_min = 2.5_dp, V_max = 4.2_dp        ! corrected-mode cutoffs (D-3)
     real(dp) :: fd_step = 1.0e-6_dp
+    real(dp) :: newton_tol = 1.0e-10_dp                ! corrected-mode Newton tolerance (D-7)
+    integer  :: newton_max_iter = 25
     character(len=16)  :: mode = 'faithful'
     character(len=256) :: file = 'Time_Voltage.txt'
 
@@ -39,8 +42,8 @@ program lfp
     namelist /electrolyte/ D, t_plus, c_bulk, z_plus, z_minus
     namelist /active/ sigma, M, rho, Q_th, R_p, k_rxn, alpha_a, alpha_c, k_Li, c_Li_ref
     namelist /constants/ R, T, F
-    namelist /operation/ C_rate, phi1_init, phi2_init, cs_init, t_max, n_steps
-    namelist /numerics/ fd_step, mode
+    namelist /operation/ C_rate, phi1_init, phi2_init, cs_init, t_max, n_steps, V_min, V_max
+    namelist /numerics/ fd_step, newton_tol, newton_max_iter, mode
     namelist /output/ file
 
     ! ---------------- derived quantities and mode switches ----------------
@@ -55,8 +58,9 @@ program lfp
     real(dp), allocatable :: c(:,:), dc(:,:), A(:,:,:), B(:,:,:), Dm(:,:,:), G(:,:)
 
     ! ---------------- time loop ----------------
-    integer  :: it, status, last_write, ounit, nsolve
-    real(dp) :: time, dt, mAhg, write_every
+    integer  :: it, status, ounit, nsolve
+    real(dp) :: time, dt, mAhg, write_every, last_write, v, h
+    logical  :: want_row, header, ok, stopped
     character(len=1) :: state
     character(len=64) :: exit_reason
     character(len=256) :: input_file
@@ -79,20 +83,27 @@ program lfp
     time = 0.0_dp
     mAhg = 0.0_dp
     dt = t_max/real(n_steps, dp)
-    last_write = 0
+    last_write = 0.0_dp
     write_every = t_max/n_steps/200
     state = 'D'
     if (C_rate < 0) state = 'C'
     exit_reason = 'max_steps'
 
     do it = 1, n_steps
+        want_row = .false.
+        header = .false.
         if (it == 1) then
-            call write_row(.true.)
+            want_row = .true.
+            header = .true.
         else if ((time - last_write)/3600 >= write_every) then
-            call write_row(.false.)
-            last_write = int(time - dt)
+            want_row = .true.
+            if (faithful) then
+                last_write = real(int(time - dt), dp)   ! an integer in the original (D-4)
+            else
+                last_write = time
+            end if
         else if (it >= n_steps) then
-            call write_row(.false.)
+            want_row = .true.
         else if (c(IP1,nj) >= 99.0_dp .and. state == 'C') then
             call write_row(.false.)
             exit_reason = 'end_of_charge'
@@ -106,6 +117,15 @@ program lfp
             exit_reason = 'max_time'
             exit
         end if
+        if (.not. faithful) then
+            v = cell_voltage()
+            if (v <= V_min .or. v >= V_max) then
+                call write_row(header)
+                exit_reason = merge('cutoff_low ', 'cutoff_high', v <= V_min)
+                exit
+            end if
+        end if
+        if (want_row) call write_row(header)
 
         if (state == 'D') then
             mAhg = mAhg + 1000.0_dp*i_spec*dt/3600.0_dp
@@ -113,10 +133,31 @@ program lfp
             mAhg = mAhg - 1000.0_dp*i_spec*dt/3600.0_dp
         end if
 
-        call assemble(dt)
-        call band_solve(NV, nj, A, B, Dm, G, dc, status, pivot=PIVOT_LEGACY)
-        if (status /= BAND_OK) dc = ieee_value(1.0_dp, ieee_quiet_nan)
-        c = c + dc
+        if (faithful) then
+            call assemble(dt)
+            call band_solve(NV, nj, A, B, Dm, G, dc, status, pivot=PIVOT_LEGACY)
+            if (status /= BAND_OK) dc = ieee_value(1.0_dp, ieee_quiet_nan)
+            c = c + dc
+        else
+            call advance(dt, h, stopped, ok)
+            if (.not. ok) then
+                exit_reason = 'solver_fail'
+                exit
+            end if
+            if (stopped) then
+                if (state == 'D') then
+                    mAhg = mAhg - 1000.0_dp*i_spec*(dt - h)/3600.0_dp
+                else
+                    mAhg = mAhg + 1000.0_dp*i_spec*(dt - h)/3600.0_dp
+                end if
+                time = time + h
+                v = cell_voltage()
+                call write_row(.false.)
+                exit_reason = merge('cutoff_low ', 'cutoff_high', v <= V_min)
+                nsolve = it
+                exit
+            end if
+        end if
         nsolve = it
 
         if (state == 'R') then
@@ -266,6 +307,10 @@ contains
         real(dp), intent(in) :: cc, cs, p1, p2
         real(dp), intent(out) :: i, di(NV)
         real(dp) :: h
+        if (.not. faithful) then
+            call rate_derivs_exact(cc, cs, p1, p2, i, di)
+            return
+        end if
         h = fd_step
         i = rate(cc, cs, p1, p2)
         if (cc <= h) then
@@ -281,6 +326,123 @@ contains
         di(IP1) = (rate(cc, cs, p1 + h, p2) - rate(cc, cs, p1 - h, p2))/(2.0_dp*h)
         di(IP2) = (rate(cc, cs, p1, p2 + h) - rate(cc, cs, p1, p2 - h))/(2.0_dp*h)
     end subroutine rate_derivs
+
+    real(dp) function ocp_slope(cs)
+        !! dU/dcs [V cm3/mol]
+        real(dp), intent(in) :: cs
+        real(dp) :: th, dth, du
+        th = (cs/(rho/M))/(M*Q_th*1000.0_dp*lit36/F)
+        dth = 1.0_dp/((rho/M)*(M*Q_th*1000.0_dp*lit36/F))
+        du = ocp_c(2)*(-ocp_c(3))/(1.0_dp + (-(ocp_c(3)*th) + ocp_c(4))**2) &
+           - ocp_c(5)*(-ocp_c(6))/(1.0_dp + (-(ocp_c(6)*th) + ocp_c(7))**2)
+        ocp_slope = du*dth
+    end function ocp_slope
+
+    subroutine rate_derivs_exact(cc, cs, p1, p2, i, di)
+        !! Rate and exact derivatives w.r.t. (c, phi1, phi2, cs); corrected mode (fixes D-6).
+        real(dp), intent(in) :: cc, cs, p1, p2
+        real(dp), intent(out) :: i, di(NV)
+        real(dp) :: rt, aa, bb, eta, i0, ea, ec, di_deta
+        rt = R*T
+        aa = alpha_a*F/rt
+        bb = alpha_c*F/rt
+        eta = p1 - p2 - ocp(cs)
+        i0 = F*k_rxn*(cc**alpha_a)*((cs_max() - cs)**alpha_a)*(cs**alpha_c)
+        ea = exp(aa*eta)
+        ec = exp(-bb*eta)
+        i = i0*(ea - ec)
+        di_deta = i0*(aa*ea + bb*ec)
+        di(IC) = alpha_a*i/cc
+        di(ICS) = i*(-alpha_a/(cs_max() - cs) + alpha_c/cs) - di_deta*ocp_slope(cs)
+        di(IP1) = di_deta
+        di(IP2) = -di_deta
+    end subroutine rate_derivs_exact
+
+    ! =============================== corrected-mode time step ===============================
+    subroutine time_terms(dt, Tt)
+        !! Storage coefficients: the time-derivative part of each row is Tt*(c - c_old).
+        real(dp), intent(in) :: dt
+        real(dp), intent(out) :: Tt(NV,nj)
+        Tt = 0.0_dp
+        Tt(ICS,1) = -(eps_AM/dt)
+        Tt(IC,2:s-1) = -(eps_sep/dt*dx(2:s-1))
+        Tt(ICS,2:s-1) = -((1.0_dp - eps_sep)/dt)
+        Tt(IC,s+1:nj-1) = -((eps/dt)*dx(s+1:nj-1))
+        Tt(ICS,s:nj) = -(eps_AM/dt)
+    end subroutine time_terms
+
+    real(dp) function bounded_step(dcc)
+        !! Largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound).
+        real(dp), intent(in) :: dcc(NV,nj)
+        real(dp), parameter :: keep = 0.9_dp
+        real(dp) :: csm
+        integer :: j
+        csm = cs_max()
+        bounded_step = 1.0_dp
+        do j = 1, nj
+            if (dcc(IC,j) < 0) bounded_step = min(bounded_step, keep*(c(IC,j) - 0.0_dp)/(-dcc(IC,j)))
+            if (dcc(ICS,j) < 0) bounded_step = min(bounded_step, keep*(c(ICS,j) - 0.0_dp)/(-dcc(ICS,j)))
+            if (dcc(ICS,j) > 0) bounded_step = min(bounded_step, keep*(csm - c(ICS,j))/dcc(ICS,j))
+        end do
+        bounded_step = max(bounded_step, 0.0_dp)
+    end function bounded_step
+
+    subroutine newton_step(h, ok)
+        !! One backward-Euler step of length h, solved with Newton's method; c is updated on success.
+        real(dp), intent(in) :: h
+        logical, intent(out) :: ok
+        real(dp) :: c_old(NV,nj), Tt(NV,nj), scale(NV), lam
+        integer :: k, st
+        c_old = c
+        call time_terms(h, Tt)
+        scale = [c_bulk, 1.0_dp, 1.0_dp, cs_max()]
+        ok = .false.
+        do k = 1, newton_max_iter
+            call assemble(h)
+            G = G - Tt*(c - c_old)
+            call band_solve(NV, nj, A, B, Dm, G, dc, st)
+            if (st /= BAND_OK) exit
+            lam = bounded_step(dc)
+            c = c + lam*dc
+            if (lam == 1.0_dp .and. maxval(abs(dc)/spread(scale, 2, nj)) <= newton_tol) then
+                ok = .true.
+                return
+            end if
+        end do
+        c = c_old
+    end subroutine newton_step
+
+    subroutine advance(dt, t_done, stopped, ok)
+        !! Advance by dt, halving the sub-step on Newton failure and stopping at a voltage cutoff.
+        real(dp), intent(in) :: dt
+        real(dp), intent(out) :: t_done
+        logical, intent(out) :: stopped, ok
+        real(dp), parameter :: min_dt = 1.0e-6_dp
+        real(dp) :: hh, vv
+        logical :: good
+        t_done = 0.0_dp
+        hh = dt
+        stopped = .false.
+        ok = .true.
+        do while (t_done < dt)
+            hh = min(hh, dt - t_done)
+            call newton_step(hh, good)
+            if (.not. good) then
+                if (hh/2 < min_dt) then
+                    ok = .false.
+                    return
+                end if
+                hh = hh/2
+                cycle
+            end if
+            t_done = t_done + hh
+            vv = cell_voltage()
+            if (vv <= V_min .or. vv >= V_max) then
+                stopped = .true.
+                return
+            end if
+        end do
+    end subroutine advance
 
     ! =============================== assembly ===============================
     subroutine face_coeffs(e, dcat, ucat, dan, uan, cface, gphi2, dd, ff)
@@ -419,9 +581,27 @@ contains
     end subroutine solid_row
 
     ! =============================== output ===============================
+    real(dp) function li_eta()
+        !! Overpotential of the lithium counter electrode (output only).
+        real(dp) :: i0_li, alpha
+        i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
+        alpha = 0.5_dp
+        if (state == 'C') then
+            li_eta = 0.5_dp*log(i_app/i0_li)/(alpha*F/(R*T))
+        else if (state == 'D') then
+            li_eta = -(0.5_dp*log(i_app/i0_li))/(alpha*F/(R*T))
+        else
+            li_eta = 0.0_dp
+        end if
+    end function li_eta
+
+    real(dp) function cell_voltage()
+        cell_voltage = c(IP1,nj) + li_eta()
+    end function cell_voltage
+
     subroutine write_row(header)
         logical, intent(in) :: header
-        real(dp) :: equiv, i0_li, eta, alpha
+        real(dp) :: equiv, i0_li, eta
         if (header) then
             write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'State', 'Time', 'Voltage', 'Equivalence', 'Anode_Eta', &
                 'anode_exchange_c', 'Edge_c0'
@@ -430,14 +610,7 @@ contains
         end if
         equiv = mAhg*M*lit36/F
         i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
-        alpha = 0.5_dp
-        if (state == 'C') then
-            eta = 0.5_dp*log(i_app/i0_li)/(alpha*F/(R*T))
-        else if (state == 'D') then
-            eta = -(0.5_dp*log(i_app/i0_li))/(alpha*F/(R*T))
-        else
-            eta = 0.0_dp
-        end if
+        eta = li_eta()
         write(ounit,'(A5,1X,2(F12.5,1X),20(ES15.5,1X))') state, time/real(3600, dp), c(IP1,nj) + eta, equiv, &
             eta*1.0e3_dp, i0_li*1.0e3_dp, c(IC,1)
     end subroutine write_row

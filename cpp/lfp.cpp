@@ -188,7 +188,10 @@ struct Params {
     double R = 8.314, T = 298.0, F = 96485.0;
     double C_rate = 1.0, phi1_init = 3.6, phi2_init = 0.0, cs_init = 1.0e-5, t_max = 36000.0;
     int n_steps = 36000;
+    double V_min = 2.5, V_max = 4.2;       // corrected-mode cutoffs (D-3)
     double fd_step = 1.0e-6;
+    double newton_tol = 1.0e-10;           // corrected-mode Newton tolerance (D-7)
+    int newton_max_iter = 25;
     std::string mode = "faithful";
     std::string file = "Time_Voltage.txt";
 };
@@ -223,8 +226,10 @@ Params read_input(const std::string& path) {
         {"k_rxn", &p.k_rxn}, {"alpha_a", &p.alpha_a}, {"alpha_c", &p.alpha_c}, {"k_li", &p.k_Li},
         {"c_li_ref", &p.c_Li_ref}, {"r", &p.R}, {"t", &p.T}, {"f", &p.F}, {"c_rate", &p.C_rate},
         {"phi1_init", &p.phi1_init}, {"phi2_init", &p.phi2_init}, {"cs_init", &p.cs_init},
-        {"t_max", &p.t_max}, {"fd_step", &p.fd_step}};
-    std::map<std::string, int*> ints = {{"nj", &p.nj}, {"sep_node", &p.sep_node}, {"n_steps", &p.n_steps}};
+        {"t_max", &p.t_max}, {"fd_step", &p.fd_step}, {"v_min", &p.V_min}, {"v_max", &p.V_max},
+        {"newton_tol", &p.newton_tol}};
+    std::map<std::string, int*> ints = {{"nj", &p.nj}, {"sep_node", &p.sep_node}, {"n_steps", &p.n_steps},
+                                        {"newton_max_iter", &p.newton_max_iter}};
     std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}};
     const std::regex group(R"(&(\w+)([\s\S]*?)/)");
     const std::regex entry(R"((\w+)\s*=\s*('[^']*'|"[^"]*"|[^,\s/]+))");
@@ -318,7 +323,28 @@ struct Model {
         return i0 * (std::exp(p.alpha_a * p.F * eta / (p.R * p.T)) - std::exp(-(p.alpha_c * p.F * eta / (p.R * p.T))));
     }
     // rate and finite-difference derivatives w.r.t. (c, phi1, phi2, cs) (D-6)
+    double ocp_slope(double cs) const {  // dU/dcs [V cm3/mol]
+        const double th = (cs / (p.rho / p.M)) / (p.M * p.Q_th * 1000.0 * lit36 / p.F);
+        const double dth = 1.0 / ((p.rho / p.M) * (p.M * p.Q_th * 1000.0 * lit36 / p.F));
+        const double x1 = -(ocp_c[2] * th) + ocp_c[3], x2 = -(ocp_c[5] * th) + ocp_c[6];
+        const double du = ocp_c[1] * (-ocp_c[2]) / (1.0 + x1 * x1) - ocp_c[4] * (-ocp_c[5]) / (1.0 + x2 * x2);
+        return du * dth;
+    }
+    // rate and exact derivatives; corrected mode (fixes D-6)
+    void rate_derivs_exact(double c, double cs, double p1, double p2, double& i, double di[NV]) const {
+        const double rt = p.R * p.T, aa = p.alpha_a * p.F / rt, bb = p.alpha_c * p.F / rt;
+        const double eta = p1 - p2 - ocp(cs);
+        const double i0 = p.F * p.k_rxn * std::pow(c, p.alpha_a) * std::pow(cs_max() - cs, p.alpha_a) * std::pow(cs, p.alpha_c);
+        const double ea = std::exp(aa * eta), ec = std::exp(-bb * eta);
+        i = i0 * (ea - ec);
+        const double di_deta = i0 * (aa * ea + bb * ec);
+        di[IC] = p.alpha_a * i / c;
+        di[ICS] = i * (-p.alpha_a / (cs_max() - cs) + p.alpha_c / cs) - di_deta * ocp_slope(cs);
+        di[IP1] = di_deta;
+        di[IP2] = -di_deta;
+    }
     void rate_derivs(double c, double cs, double p1, double p2, double& i, double di[NV]) const {
+        if (!faithful) { rate_derivs_exact(c, cs, p1, p2, i, di); return; }
         const double h = p.fd_step;
         i = rate(c, cs, p1, p2);
         di[IC] = c <= h ? (rate(c + h, cs, p1, p2) - i) / h
@@ -327,6 +353,30 @@ struct Model {
                           : (rate(c, cs + h, p1, p2) - rate(c, cs - h, p1, p2)) / (2.0 * h);
         di[IP1] = (rate(c, cs, p1 + h, p2) - rate(c, cs, p1 - h, p2)) / (2.0 * h);
         di[IP2] = (rate(c, cs, p1, p2 + h) - rate(c, cs, p1, p2 - h)) / (2.0 * h);
+    }
+
+    // ---- corrected-mode time step ----
+    // storage coefficients: the time-derivative part of each row is T * (c - c_old)
+    std::vector<double> time_terms(double dt) const {
+        const int nj = p.nj;
+        std::vector<double> T(static_cast<std::size_t>(nj) * NV, 0.0);
+        T[ICS] = -(p.eps_AM / dt);
+        for (int j = 1; j < s; ++j) { T[j * NV + IC] = -(p.eps_sep / dt * dx[j]); T[j * NV + ICS] = -((1.0 - p.eps_sep) / dt); }
+        for (int j = s + 1; j < nj - 1; ++j) T[j * NV + IC] = -((p.eps / dt) * dx[j]);
+        for (int j = s; j < nj; ++j) T[j * NV + ICS] = -(p.eps_AM / dt);
+        return T;
+    }
+    // largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound)
+    double bounded_step(const std::vector<double>& c, const std::vector<double>& d) const {
+        const double keep = 0.9, csm = cs_max();
+        double lam = 1.0;
+        for (int j = 0; j < p.nj; ++j) {
+            const double dcc = d[j * NV + IC], dcs = d[j * NV + ICS];
+            if (dcc < 0) lam = std::min(lam, keep * (c[j * NV + IC] - 0.0) / -dcc);
+            if (dcs < 0) lam = std::min(lam, keep * (c[j * NV + ICS] - 0.0) / -dcs);
+            if (dcs > 0) lam = std::min(lam, keep * (csm - c[j * NV + ICS]) / dcs);
+        }
+        return std::max(lam, 0.0);
     }
 
     // ---- assembly ----
@@ -479,7 +529,6 @@ int main(int argc, char** argv) {
         }
         double t = 0.0, mAhg = 0.0, dt = p.t_max / static_cast<double>(p.n_steps);
         const double write_every = p.t_max / p.n_steps / 200;
-        long last_write = 0;
         const char state = p.C_rate < 0 ? 'C' : 'D';
         std::string exit_reason = "max_steps";
         int nsolve = 0;
@@ -505,14 +554,64 @@ int main(int argc, char** argv) {
                          sci15(i0_li * 1.0e3).c_str(), sci15(c[IC]).c_str());
         };
 
+        auto cell_voltage = [&]() {
+            const double i0_li = p.F * p.k_Li * std::pow(c[IC], 0.5) * std::pow(p.c_Li_ref, 0.5);
+            const double alpha = 0.5;
+            double eta = 0.0;
+            if (state == 'C') eta = 0.5 * std::log(m.i_app / i0_li) / (alpha * p.F / (p.R * p.T));
+            else if (state == 'D') eta = -(0.5 * std::log(m.i_app / i0_li)) / (alpha * p.F / (p.R * p.T));
+            return c[(nj - 1) * NV + IP1] + eta;
+        };
+        // one backward-Euler step of length h solved with Newton; c is updated on success
+        auto newton_step = [&](double h) {
+            const std::vector<double> c_old = c, T = m.time_terms(h);
+            const double scale[NV] = {p.c_bulk, 1.0, 1.0, m.cs_max()};
+            for (int k = 0; k < p.newton_max_iter; ++k) {
+                m.assemble(c, h, A, B, Dm, G);
+                for (std::size_t q = 0; q < G.size(); ++q) G[q] = G[q] - T[q] * (c[q] - c_old[q]);
+                if (!band::solve(NV, nj, A, B, Dm, G, dc, band::Pivot::partial)) break;
+                const double lam = m.bounded_step(c, dc);
+                double worst = 0.0;
+                for (std::size_t q = 0; q < c.size(); ++q) {
+                    c[q] = c[q] + lam * dc[q];
+                    worst = std::max(worst, std::abs(dc[q]) / scale[q % NV]);
+                }
+                if (lam == 1.0 && worst <= p.newton_tol) return true;
+            }
+            c = c_old;
+            return false;
+        };
+        // advance by dt, halving the sub-step on failure and stopping at a voltage cutoff
+        auto advance = [&](double dtt, double& t_done, bool& stopped) {
+            const double min_dt = 1.0e-6;
+            double hh = dtt;
+            t_done = 0.0;
+            stopped = false;
+            while (t_done < dtt) {
+                hh = std::min(hh, dtt - t_done);
+                if (!newton_step(hh)) {
+                    if (hh / 2 < min_dt) return false;
+                    hh = hh / 2;
+                    continue;
+                }
+                t_done = t_done + hh;
+                const double vv = cell_voltage();
+                if (vv <= p.V_min || vv >= p.V_max) { stopped = true; return true; }
+            }
+            return true;
+        };
+
+        const bool faithful = m.faithful;
+        double last_w = 0.0;
         for (int it = 1; it <= p.n_steps; ++it) {
+            bool want_row = false, header = false;
             if (it == 1) {
-                write_row(true);
-            } else if ((t - last_write) / 3600 >= write_every) {
-                write_row(false);
-                last_write = static_cast<long>(t - dt);
+                want_row = header = true;
+            } else if ((t - last_w) / 3600 >= write_every) {
+                want_row = true;
+                last_w = faithful ? static_cast<double>(static_cast<long>(t - dt)) : t;  // integer in the original (D-4)
             } else if (it >= p.n_steps) {
-                write_row(false);
+                want_row = true;
             } else if (c[(nj - 1) * NV + IP1] >= 99.0 && state == 'C') {
                 write_row(false); exit_reason = "end_of_charge"; break;
             } else if (std::isnan(dc[IC])) {
@@ -520,13 +619,38 @@ int main(int argc, char** argv) {
             } else if (t >= 99.0 * 3600.0) {
                 write_row(false); exit_reason = "max_time"; break;
             }
+            if (!faithful) {
+                const double v = cell_voltage();
+                if (v <= p.V_min || v >= p.V_max) {
+                    write_row(header);
+                    exit_reason = v <= p.V_min ? "cutoff_low" : "cutoff_high";
+                    break;
+                }
+            }
+            if (want_row) write_row(header);
             if (state == 'D') mAhg = mAhg + 1000.0 * m.i_spec * dt / 3600.0;
             else mAhg = mAhg - 1000.0 * m.i_spec * dt / 3600.0;
 
-            m.assemble(c, dt, A, B, Dm, G);
-            if (!band::solve(NV, nj, A, B, Dm, G, dc, band::Pivot::legacy))
-                std::fill(dc.begin(), dc.end(), std::numeric_limits<double>::quiet_NaN());
-            for (std::size_t k = 0; k < c.size(); ++k) c[k] = c[k] + dc[k];
+            if (faithful) {
+                m.assemble(c, dt, A, B, Dm, G);
+                if (!band::solve(NV, nj, A, B, Dm, G, dc, band::Pivot::legacy))
+                    std::fill(dc.begin(), dc.end(), std::numeric_limits<double>::quiet_NaN());
+                for (std::size_t k = 0; k < c.size(); ++k) c[k] = c[k] + dc[k];
+            } else {
+                double h = 0.0;
+                bool stopped = false;
+                if (!advance(dt, h, stopped)) { exit_reason = "solver_fail"; break; }
+                if (stopped) {
+                    if (state == 'D') mAhg = mAhg - 1000.0 * m.i_spec * (dt - h) / 3600.0;
+                    else mAhg = mAhg + 1000.0 * m.i_spec * (dt - h) / 3600.0;
+                    t = t + h;
+                    const double v = cell_voltage();
+                    write_row(false);
+                    exit_reason = v <= p.V_min ? "cutoff_low" : "cutoff_high";
+                    nsolve = it;
+                    break;
+                }
+            }
             nsolve = it;
             dt = p.t_max / static_cast<double>(p.n_steps);
             t = t + dt;
