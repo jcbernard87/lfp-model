@@ -17,8 +17,10 @@ def _exe(env_name, default):
 def run_native(tmp_path):
     """Run a compiled implementation on the default input with overrides; return the output path."""
 
-    def _run(exe, *, C_rate=1.0, mode="faithful", name="out.txt"):
+    def _run(exe, *, C_rate=1.0, mode="faithful", name="out.txt", steps=None):
         text = (ROOT / "input" / "default.nml").read_text()
+        if steps:
+            text += f"&protocol\n  steps = '{steps}'\n/\n"
         text = re.sub(r"C_rate = [0-9.]+", f"C_rate = {C_rate}", text)
         text = text.replace("mode = 'faithful'", f"mode = '{mode}'")
         text = text.replace("file = 'Time_Voltage.txt'", f"file = '{name}'")

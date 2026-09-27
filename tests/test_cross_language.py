@@ -56,3 +56,20 @@ def test_cpp_matches_fortran_corrected(cpp_exe, fortran_exe, run_native, C_rate)
     a = run_native(cpp_exe, C_rate=C_rate, mode="corrected", name="c.txt")
     b = run_native(fortran_exe, C_rate=C_rate, mode="corrected", name="f.txt")
     assert a.read_bytes() == b.read_bytes()
+
+
+CYCLE = "cc C=2 Vmin=2.5; rest t=600; cc C=-1 Vmax=4.0; cv V=4.0 Imin=0.05; rest t=600"
+
+
+def test_protocol_cycle_all_languages(fortran_exe, cpp_exe, run_native, tmp_path):
+    """A full discharge / rest / charge / CV / rest cycle agrees across the three implementations."""
+    f_out = run_native(fortran_exe, mode="corrected", name="f_cycle.txt", steps=CYCLE)
+    c_out = run_native(cpp_exe, mode="corrected", name="c_cycle.txt", steps=CYCLE)
+    assert f_out.read_bytes() == c_out.read_bytes()
+    r = run(Params(mode="corrected", steps=CYCLE))
+    p_out = tmp_path / "py_cycle.txt"
+    r.write(p_out)
+    sf, vf = read_tv(f_out)
+    sp, vp = read_tv(p_out)
+    assert sf == sp and vf.shape == vp.shape
+    np.testing.assert_allclose(vf, vp, rtol=1e-5, atol=1e-9)

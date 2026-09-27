@@ -116,7 +116,17 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
   - negative for I < i₀,Li, where it should vanish at zero current
   - half the Tafel slope of a Butler–Volmer interface with α = 0.5, since the Tafel limit is (RT/(αF))·ln(I/i₀) = 2(RT/F)·ln(I/i₀)
 - **Fix in corrected mode:** symmetric Butler–Volmer inverted exactly, η = −(RT/(αF))·asinh(I/(2 i₀,Li)). It is zero at I = 0, and for I ≫ i₀ it tends to the Tafel form.
-- **Effect:** at 1C (I/i₀ = 12.2) the anode overpotential is −128 mV instead of −64 mV, so corrected-mode cell voltages are about 64 mV lower at 1C, 72 mV at 2C and 40 mV at 0.1C. This is a modelling choice the author should confirm. The original factor 0.5 might have been intended, for example as an empirical adjustment.
+- **Effect** (computed at the initial electrolyte concentration):
+
+  | Rate | I/i₀,Li | Original η | Butler–Volmer η | Voltage shift |
+  |---|---|---|---|---|
+  | 0.1C | 1.22 | −5.1 mV | −29.6 mV | −24.5 mV |
+  | 0.2C | 2.44 | −22.9 mV | −52.8 mV | −29.9 mV |
+  | 0.5C | 6.09 | −46.4 mV | −94.1 mV | −47.7 mV |
+  | 1C | 12.2 | −64.2 mV | −128.7 mV | −64.5 mV |
+  | 2C | 24.4 | −82.0 mV | −164.1 mV | −82.1 mV |
+
+  This is a modelling choice the author should confirm. The original factor 0.5 might have been intended, for example as an empirical adjustment.
 
 ## D-13. Regularized exchange current near an empty or full particle (corrected mode)
 

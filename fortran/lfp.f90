@@ -12,7 +12,7 @@
 !> SPDX-License-Identifier: BSD-3-Clause
 program lfp
     use, intrinsic :: iso_fortran_env, only: dp => real64, sp => real32, error_unit
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_value, ieee_quiet_nan
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite, ieee_value, ieee_quiet_nan, ieee_positive_inf
     use bandsolver_kernel, only: band_solve, BAND_OK, PIVOT_LEGACY
     implicit none
 
@@ -36,6 +36,9 @@ program lfp
     real(dp) :: newton_tol = 1.0e-10_dp                ! corrected-mode Newton tolerance (D-7)
     integer  :: newton_max_iter = 25
     character(len=16)  :: mode = 'faithful'
+    character(len=2048) :: steps = ''                  ! corrected-mode protocol (docs/protocol.md)
+    integer  :: cycles = 1
+    real(dp) :: write_interval = 18.0_dp               ! [s], corrected mode
     character(len=256) :: file = 'Time_Voltage.txt'
 
     namelist /cell/ L_cath, L_sep, nj, sep_node, eps, eps_AM, eps_sep, tau_sep, bruggeman
@@ -44,13 +47,22 @@ program lfp
     namelist /constants/ R, T, F
     namelist /operation/ C_rate, phi1_init, phi2_init, cs_init, t_max, n_steps, V_min, V_max
     namelist /numerics/ fd_step, newton_tol, newton_max_iter, mode
-    namelist /output/ file
+    namelist /protocol/ steps, cycles
+    namelist /output/ file, write_interval
 
     ! ---------------- derived quantities and mode switches ----------------
     logical  :: faithful
     real(dp) :: lit36, ocp_c(7), spec_a, tortuosity, i_spec, i_app, eps_sep_face, phi1_sign
     logical  :: full_current
     real(dp) :: dcat_s, dan_s, ucat_s, uan_s, dcat_c, dan_c, ucat_c, uan_c
+    real(dp) :: mass_area, i_1C
+    real(dp), parameter :: THETA_REG = 1.0e-6_dp       ! D-13 regularization threshold
+
+    ! ---------------- protocol (corrected mode) ----------------
+    integer, parameter :: K_CC = 1, K_CV = 2, K_REST = 3
+    integer :: nstep
+    integer, allocatable :: skind(:)
+    real(dp), allocatable :: sC(:), sV(:), sT(:), sVmin(:), sVmax(:), sImin(:)   ! sT, sImin < 0: unset
 
     ! ---------------- mesh and state ----------------
     integer :: s                                  ! interface node index (1-based = sep_node)
@@ -58,9 +70,8 @@ program lfp
     real(dp), allocatable :: c(:,:), dc(:,:), A(:,:,:), B(:,:,:), Dm(:,:,:), G(:,:)
 
     ! ---------------- time loop ----------------
-    integer  :: it, status, ounit, nsolve
-    real(dp) :: time, dt, mAhg, write_every, last_write, v, h
-    logical  :: want_row, header, ok, stopped
+    integer  :: ounit, nsolve
+    real(dp) :: time, dt, mAhg
     character(len=1) :: state
     character(len=64) :: exit_reason
     character(len=256) :: input_file
@@ -83,96 +94,397 @@ program lfp
     time = 0.0_dp
     mAhg = 0.0_dp
     dt = t_max/real(n_steps, dp)
-    last_write = 0.0_dp
-    write_every = t_max/n_steps/200
-    state = 'D'
-    if (C_rate < 0) state = 'C'
     exit_reason = 'max_steps'
 
-    do it = 1, n_steps
-        want_row = .false.
-        header = .false.
-        if (it == 1) then
-            want_row = .true.
-            header = .true.
-        else if ((time - last_write)/3600 >= write_every) then
-            want_row = .true.
-            if (faithful) then
-                last_write = real(int(time - dt), dp)   ! an integer in the original (D-4)
-            else
-                last_write = time
-            end if
-        else if (it >= n_steps) then
-            want_row = .true.
-        else if (c(IP1,nj) >= 99.0_dp .and. state == 'C') then
-            call write_row(.false.)
-            exit_reason = 'end_of_charge'
-            exit
-        else if (ieee_is_nan(dc(IC,1))) then
-            call write_row(.false.)
-            exit_reason = 'nan'
-            exit
-        else if (time >= 99.0_dp*3600.0_dp) then
-            call write_row(.false.)
-            exit_reason = 'max_time'
-            exit
-        end if
-        if (.not. faithful) then
-            v = cell_voltage()
-            if (v <= V_min .or. v >= V_max) then
-                call write_row(header)
-                exit_reason = merge('cutoff_low ', 'cutoff_high', v <= V_min)
-                exit
-            end if
-        end if
-        if (want_row) call write_row(header)
-
-        if (state == 'D') then
-            mAhg = mAhg + 1000.0_dp*i_spec*dt/3600.0_dp
-        else if (state == 'C') then
-            mAhg = mAhg - 1000.0_dp*i_spec*dt/3600.0_dp
-        end if
-
-        if (faithful) then
-            call assemble(dt)
-            call band_solve(NV, nj, A, B, Dm, G, dc, status, pivot=PIVOT_LEGACY)
-            if (status /= BAND_OK) dc = ieee_value(1.0_dp, ieee_quiet_nan)
-            c = c + dc
-        else
-            call advance(dt, h, stopped, ok)
-            if (.not. ok) then
-                exit_reason = 'solver_fail'
-                exit
-            end if
-            if (stopped) then
-                if (state == 'D') then
-                    mAhg = mAhg - 1000.0_dp*i_spec*(dt - h)/3600.0_dp
-                else
-                    mAhg = mAhg + 1000.0_dp*i_spec*(dt - h)/3600.0_dp
-                end if
-                time = time + h
-                v = cell_voltage()
-                call write_row(.false.)
-                exit_reason = merge('cutoff_low ', 'cutoff_high', v <= V_min)
-                nsolve = it
-                exit
-            end if
-        end if
-        nsolve = it
-
-        if (state == 'R') then
-            dt = dt*1.0001_dp
-        else
-            dt = t_max/real(n_steps, dp)
-        end if
-        time = time + dt
-    end do
+    if (faithful) then
+        call run_faithful()
+    else
+        call parse_protocol()
+        call run_protocol()
+    end if
 
     close(ounit)
     write(*,'(A,G0,A,I0,A)') trim(mode)//' run, C-rate ', C_rate, ': exit '//trim(exit_reason)//' after ', &
         nsolve, ' steps; wrote '//trim(file)
 
 contains
+
+    ! =============================== faithful run ===============================
+    subroutine run_faithful()
+        !! The original program's constant-current discharge, step for step.
+        integer :: it, status
+        integer :: last_write                 ! an integer in the original (D-4)
+        real(dp) :: write_every
+        last_write = 0
+        write_every = t_max/n_steps/200
+        state = 'D'
+        if (C_rate < 0) state = 'C'
+        do it = 1, n_steps
+            if (it == 1) then
+                call write_row(.true.)
+            else if ((time - last_write)/3600 >= write_every) then
+                call write_row(.false.)
+                last_write = int(time - dt)
+            else if (it >= n_steps) then
+                call write_row(.false.)
+            else if (c(IP1,nj) >= 99.0_dp .and. state == 'C') then
+                call write_row(.false.)
+                exit_reason = 'end_of_charge'
+                exit
+            else if (ieee_is_nan(dc(IC,1))) then
+                call write_row(.false.)
+                exit_reason = 'nan'
+                exit
+            else if (time >= 99.0_dp*3600.0_dp) then
+                call write_row(.false.)
+                exit_reason = 'max_time'
+                exit
+            end if
+            if (state == 'D') then
+                mAhg = mAhg + 1000.0_dp*i_spec*dt/3600.0_dp
+            else if (state == 'C') then
+                mAhg = mAhg - 1000.0_dp*i_spec*dt/3600.0_dp
+            end if
+            call assemble(dt)
+            call band_solve(NV, nj, A, B, Dm, G, dc, status, pivot=PIVOT_LEGACY)
+            if (status /= BAND_OK) dc = ieee_value(1.0_dp, ieee_quiet_nan)
+            c = c + dc
+            nsolve = it
+            if (state == 'R') then
+                dt = dt*1.0001_dp
+            else
+                dt = t_max/real(n_steps, dp)
+            end if
+            time = time + dt
+        end do
+    end subroutine run_faithful
+
+    ! =============================== protocol (corrected mode) ===============================
+    subroutine parse_protocol()
+        !! Parse `steps` (docs/protocol.md) and expand it `cycles` times.
+        character(len=len(steps)) :: txt, part
+        character(len=64) :: word, key
+        integer :: n1, k, pos, semi, cyc, w0, w1, eqp, ios
+        real(dp) :: val
+        real(dp), allocatable :: tC(:), tV(:), tT(:), tVmin(:), tVmax(:), tImin(:)
+        integer, allocatable :: tk(:)
+        logical :: hasC, hasV
+
+        txt = adjustl(steps)
+        if (len_trim(txt) == 0) then
+            allocate(skind(1), sC(1), sV(1), sT(1), sVmin(1), sVmax(1), sImin(1))
+            nstep = 1
+            skind = K_CC; sC = C_rate; sV = 0.0_dp; sT = -1.0_dp; sVmin = V_min; sVmax = V_max; sImin = -1.0_dp
+            return
+        end if
+        n1 = count_steps(txt)
+        allocate(tk(n1), tC(n1), tV(n1), tT(n1), tVmin(n1), tVmax(n1), tImin(n1))
+        pos = 1
+        k = 0
+        do while (pos <= len_trim(txt))
+            semi = index(txt(pos:), ';')
+            if (semi == 0) then
+                part = txt(pos:)
+                pos = len_trim(txt) + 1
+            else
+                part = txt(pos:pos+semi-2)
+                pos = pos + semi
+            end if
+            part = adjustl(part)
+            if (len_trim(part) == 0) cycle
+            k = k + 1
+            tC(k) = 0.0_dp; tV(k) = 0.0_dp; tT(k) = -1.0_dp; tVmin(k) = V_min; tVmax(k) = V_max; tImin(k) = -1.0_dp
+            hasC = .false.; hasV = .false.
+            w0 = 1
+            call next_word(part, w0, w1, word)
+            select case (lower(word))
+            case ('cc');   tk(k) = K_CC
+            case ('cv');   tk(k) = K_CV
+            case ('rest'); tk(k) = K_REST
+            case default;  call proto_error(k, 'unknown step type '//trim(word))
+            end select
+            w0 = w1
+            do
+                call next_word(part, w0, w1, word)
+                if (len_trim(word) == 0) exit
+                w0 = w1
+                eqp = index(word, '=')
+                if (eqp == 0) call proto_error(k, 'expected key=value, got '//trim(word))
+                key = lower(word(:eqp-1))
+                word = word(eqp+1:)
+                call fix_exponent(word)
+                read(word, *, iostat=ios) val
+                if (ios /= 0) call proto_error(k, 'bad number '//trim(word))
+                select case (tk(k))
+                case (K_CC)
+                    select case (key)
+                    case ('c');    tC(k) = val; hasC = .true.
+                    case ('t');    tT(k) = val
+                    case ('vmin'); tVmin(k) = val
+                    case ('vmax'); tVmax(k) = val
+                    case default;  call proto_error(k, 'cc does not take '//trim(key))
+                    end select
+                case (K_CV)
+                    select case (key)
+                    case ('v');    tV(k) = val; hasV = .true.
+                    case ('t');    tT(k) = val
+                    case ('imin'); tImin(k) = val
+                    case default;  call proto_error(k, 'cv does not take '//trim(key))
+                    end select
+                case (K_REST)
+                    if (key /= 't') call proto_error(k, 'rest does not take '//trim(key))
+                    tT(k) = val
+                end select
+                if (key == 't' .and. val <= 0) call proto_error(k, 't must be positive')
+            end do
+            if (tk(k) == K_CC .and. .not. hasC) call proto_error(k, 'cc needs C=')
+            if (tk(k) == K_CV .and. .not. hasV) call proto_error(k, 'cv needs V=')
+            if (tk(k) == K_CV .and. tT(k) < 0 .and. tImin(k) < 0) call proto_error(k, 'cv needs t= or Imin= to end')
+            if (tk(k) == K_REST .and. tT(k) < 0) call proto_error(k, 'rest needs t=')
+        end do
+        cyc = max(1, cycles)
+        nstep = k*cyc
+        allocate(skind(nstep), sC(nstep), sV(nstep), sT(nstep), sVmin(nstep), sVmax(nstep), sImin(nstep))
+        skind = [(tk(1:k), n1 = 1, cyc)]
+        sC = [(tC(1:k), n1 = 1, cyc)]
+        sV = [(tV(1:k), n1 = 1, cyc)]
+        sT = [(tT(1:k), n1 = 1, cyc)]
+        sVmin = [(tVmin(1:k), n1 = 1, cyc)]
+        sVmax = [(tVmax(1:k), n1 = 1, cyc)]
+        sImin = [(tImin(1:k), n1 = 1, cyc)]
+    end subroutine parse_protocol
+
+    integer function count_steps(txt)
+        character(len=*), intent(in) :: txt
+        integer :: i
+        count_steps = 1
+        do i = 1, len_trim(txt)
+            if (txt(i:i) == ';') count_steps = count_steps + 1
+        end do
+    end function count_steps
+
+    subroutine next_word(str, i0, i1, word)
+        !! The next blank-separated word of str at or after position i0; i1 is the position after it.
+        character(len=*), intent(in) :: str
+        integer, intent(in) :: i0
+        integer, intent(out) :: i1
+        character(len=*), intent(out) :: word
+        integer :: i, j
+        word = ''
+        i = i0
+        do while (i <= len_trim(str))
+            if (str(i:i) /= ' ') exit
+            i = i + 1
+        end do
+        j = i
+        do while (j <= len_trim(str))
+            if (str(j:j) == ' ') exit
+            j = j + 1
+        end do
+        if (j > i) word = str(i:j-1)
+        i1 = j
+    end subroutine next_word
+
+    function lower(str) result(out)
+        character(len=*), intent(in) :: str
+        character(len=len(str)) :: out
+        integer :: i
+        out = str
+        do i = 1, len(str)
+            if (str(i:i) >= 'A' .and. str(i:i) <= 'Z') out(i:i) = achar(iachar(str(i:i)) + 32)
+        end do
+    end function lower
+
+    subroutine fix_exponent(word)
+        !! Accept Fortran d exponents written in lower case as well.
+        character(len=*), intent(inout) :: word
+        integer :: i
+        do i = 1, len_trim(word)
+            if (word(i:i) == 'd' .or. word(i:i) == 'D') word(i:i) = 'e'
+        end do
+    end subroutine fix_exponent
+
+    subroutine proto_error(k, msg)
+        integer, intent(in) :: k
+        character(len=*), intent(in) :: msg
+        write(error_unit,'(A,I0,A)') 'protocol step ', k, ': '//msg
+        error stop 2
+    end subroutine proto_error
+
+    subroutine run_protocol()
+        !! Run the protocol steps in order (docs/protocol.md).
+        integer :: k, nsteps_done
+        real(dp) :: I, h, h_done, t_step, last_write
+        logical :: stopped, ok
+        character(len=16) :: why, reason
+
+        I = 0.0_dp
+        if (skind(1) == K_CC) I = sC(1)*i_1C
+        i_app = I
+        call write_row_c(.true., 1)
+        last_write = time
+        nsteps_done = 0
+        reason = ''
+        do k = 1, nstep
+            t_step = 0.0_dp
+            if (skind(k) == K_CC) then
+                I = sC(k)*i_1C
+            else if (skind(k) == K_REST) then
+                I = 0.0_dp
+            end if
+            do
+                h = dt
+                if (sT(k) >= 0) h = min(dt, sT(k) - t_step)
+                if (skind(k) == K_CV) then
+                    call cv_step(h, sV(k), I, ok)
+                    h_done = h
+                    stopped = sImin(k) >= 0 .and. abs(I) <= sImin(k)*i_1C
+                    why = 'current_limit'
+                else
+                    i_app = I
+                    call advance(h, h_done, stopped, ok, skind(k) == K_CC, sVmin(k), sVmax(k))
+                    why = 'cutoff_high'
+                    if (stopped) then
+                        if (cell_voltage() <= sVmin(k)) why = 'cutoff_low'
+                    end if
+                end if
+                i_app = I
+                if (.not. ok) then
+                    call write_row_c(.false., k)
+                    exit_reason = 'solver_fail'
+                    nsolve = nsteps_done
+                    return
+                end if
+                mAhg = mAhg + 1000.0_dp*(I/mass_area)*h_done/3600.0_dp
+                time = time + h_done
+                t_step = t_step + h_done
+                nsteps_done = nsteps_done + 1
+                if (any(ieee_is_nan(c))) then
+                    call write_row_c(.false., k)
+                    exit_reason = 'nan'
+                    nsolve = nsteps_done
+                    return
+                end if
+                if (stopped .or. (sT(k) >= 0 .and. t_step >= sT(k)*(1.0_dp - 1.0e-12_dp))) then
+                    call write_row_c(.false., k)
+                    last_write = time
+                    if (stopped) then
+                        reason = why
+                    else
+                        reason = 'duration'
+                    end if
+                    exit
+                end if
+                if (time - last_write >= write_interval) then
+                    call write_row_c(.false., k)
+                    last_write = time
+                end if
+                if (time >= 99.0_dp*3600.0_dp) then
+                    call write_row_c(.false., k)
+                    exit_reason = 'max_time'
+                    nsolve = nsteps_done
+                    return
+                end if
+            end do
+        end do
+        if (nstep == 1) then
+            exit_reason = reason
+        else
+            exit_reason = 'end_of_protocol'
+        end if
+        nsolve = nsteps_done
+    end subroutine run_protocol
+
+    subroutine cv_step(h, V_set, I, ok)
+        !! One constant-voltage time step: find I with V(I) = V_set (see simulate.cv_step in Python).
+        real(dp), intent(in) :: h, V_set
+        real(dp), intent(inout) :: I
+        logical, intent(out) :: ok
+        real(dp), parameter :: tol = 1.0e-9_dp
+        real(dp) :: c_start(NV,nj), fI, grow, a, b, fa, fb
+        logical :: have_a, have_b, good
+        integer :: it, side
+        c_start = c
+        ok = .false.
+        call cv_feval(h, V_set, c_start, I, fI, good)
+        if (good .and. abs(fI) <= tol) then
+            ok = .true.
+            return
+        end if
+        grow = max(abs(I), 1.0e-2_dp*i_1C)
+        have_a = .false.; have_b = .false.
+        a = 0; b = 0; fa = 0; fb = 0
+        do it = 1, 60
+            if (fI > 0) then
+                a = I; fa = fI; have_a = .true.
+                if (have_b) exit
+                if (I < 0) then
+                    I = 0.0_dp
+                else
+                    I = I + grow
+                end if
+            else
+                b = I; fb = fI; have_b = .true.
+                if (have_a) exit
+                if (I > 0) then
+                    I = 0.0_dp
+                else
+                    I = I - grow
+                end if
+            end if
+            grow = grow*2.0_dp
+            call cv_feval(h, V_set, c_start, I, fI, good)
+            if (good .and. abs(fI) <= tol) then
+                ok = .true.
+                return
+            end if
+        end do
+        if (.not. (have_a .and. have_b)) then
+            c = c_start
+            return
+        end if
+        side = 0
+        do it = 1, 200
+            if (ieee_is_finite(fa) .and. ieee_is_finite(fb)) then
+                I = (a*fb - b*fa)/(fb - fa)
+                if (.not. (a < I .and. I < b)) I = 0.5_dp*(a + b)
+            else
+                I = 0.5_dp*(a + b)
+            end if
+            call cv_feval(h, V_set, c_start, I, fI, good)
+            if (abs(fI) <= tol .or. (b - a) <= 1.0e-14_dp*i_1C) then
+                ok = good
+                if (.not. good) c = c_start
+                return
+            end if
+            if (fI > 0) then
+                a = I; fa = fI
+                if (side == 1 .and. ieee_is_finite(fb)) fb = fb*0.5_dp
+                side = 1
+            else
+                b = I; fb = fI
+                if (side == -1 .and. ieee_is_finite(fa)) fa = fa*0.5_dp
+                side = -1
+            end if
+        end do
+        c = c_start
+    end subroutine cv_step
+
+    subroutine cv_feval(h, V_set, c_start, Itry, fval, success)
+        !! f(I) = V - V_set after one Newton step from c_start; +/-inf if the step fails.
+        real(dp), intent(in) :: h, V_set, c_start(NV,nj), Itry
+        real(dp), intent(out) :: fval
+        logical, intent(out) :: success
+        c = c_start
+        i_app = Itry
+        call newton_step(h, success)
+        if (success) then
+            fval = cell_voltage() - V_set
+        else
+            fval = ieee_value(1.0_dp, ieee_positive_inf)
+            if (Itry >= 0) fval = -fval
+        end if
+    end subroutine cv_feval
 
     ! =============================== input ===============================
     subroutine read_input(path)
@@ -191,6 +503,7 @@ contains
         rewind(u); read(u, nml=constants, iostat=ios);   call check(ios, 'constants')
         rewind(u); read(u, nml=operation, iostat=ios);   call check(ios, 'operation')
         rewind(u); read(u, nml=numerics, iostat=ios);    call check(ios, 'numerics')
+        rewind(u); read(u, nml=protocol, iostat=ios);    call check(ios, 'protocol')
         rewind(u); read(u, nml=output, iostat=ios);      call check(ios, 'output')
         close(u)
     end subroutine read_input
@@ -252,6 +565,8 @@ contains
         tortuosity = eps**bruggeman
         i_spec = Q_th*C_rate
         i_app = i_spec*L_cath*eps_AM*rho
+        mass_area = L_cath*eps_AM*rho
+        i_1C = Q_th*mass_area
 
         ! ion diffusivities and mobilities, then effective values per region
         t_an = 1.0_dp - t_plus
@@ -338,22 +653,41 @@ contains
         ocp_slope = du*dth
     end function ocp_slope
 
+    subroutine power_reg(x, alpha, delta, g, dg)
+        !! x**alpha, replaced below delta by a C1 quadratic with g(0) = 0 and a finite slope (D-13).
+        real(dp), intent(in) :: x, alpha, delta
+        real(dp), intent(out) :: g, dg
+        real(dp) :: u
+        if (x < delta) then
+            u = x/delta
+            g = delta**alpha*((2.0_dp - alpha)*u + (alpha - 1.0_dp)*u*u)
+            dg = delta**(alpha - 1.0_dp)*((2.0_dp - alpha) + 2.0_dp*(alpha - 1.0_dp)*u)
+        else
+            g = x**alpha
+            dg = alpha*x**(alpha - 1.0_dp)
+        end if
+    end subroutine power_reg
+
     subroutine rate_derivs_exact(cc, cs, p1, p2, i, di)
         !! Rate and exact derivatives w.r.t. (c, phi1, phi2, cs); corrected mode (fixes D-6).
         real(dp), intent(in) :: cc, cs, p1, p2
         real(dp), intent(out) :: i, di(NV)
-        real(dp) :: rt, aa, bb, eta, i0, ea, ec, di_deta
+        real(dp) :: rt, aa, bb, eta, i0, ea, ec, di_deta, gv, dgv, gs, dgs, pre, di0
         rt = R*T
         aa = alpha_a*F/rt
         bb = alpha_c*F/rt
         eta = p1 - p2 - ocp(cs)
-        i0 = F*k_rxn*(cc**alpha_a)*((cs_max() - cs)**alpha_a)*(cs**alpha_c)
+        call power_reg(cs_max() - cs, alpha_a, THETA_REG*cs_max(), gv, dgv)
+        call power_reg(cs, alpha_c, THETA_REG*cs_max(), gs, dgs)
+        pre = F*k_rxn*(cc**alpha_a)
+        i0 = pre*gv*gs
+        di0 = pre*(gs*(-dgv) + gv*dgs)
         ea = exp(aa*eta)
         ec = exp(-bb*eta)
         i = i0*(ea - ec)
         di_deta = i0*(aa*ea + bb*ec)
         di(IC) = alpha_a*i/cc
-        di(ICS) = i*(-alpha_a/(cs_max() - cs) + alpha_c/cs) - di_deta*ocp_slope(cs)
+        di(ICS) = di0*(ea - ec) - di_deta*ocp_slope(cs)
         di(IP1) = di_deta
         di(IP2) = -di_deta
     end subroutine rate_derivs_exact
@@ -392,6 +726,22 @@ contains
         bounded_step = max(bounded_step, 0.0_dp)
     end function bounded_step
 
+    subroutine equilibrate()
+        !! Scale every equation by the largest entry of its row in B (the solution is unchanged).
+        integer :: j, r
+        real(dp) :: sc
+        do j = 1, nj
+            do r = 1, NV
+                sc = maxval(abs(B(r,:,j)))
+                if (sc == 0.0_dp) sc = 1.0_dp
+                A(r,:,j) = A(r,:,j)/sc
+                B(r,:,j) = B(r,:,j)/sc
+                Dm(r,:,j) = Dm(r,:,j)/sc
+                G(r,j) = G(r,j)/sc
+            end do
+        end do
+    end subroutine equilibrate
+
     subroutine newton_step(h, ok)
         !! One backward-Euler step of length h, solved with Newton's method; c is updated on success.
         real(dp), intent(in) :: h
@@ -405,6 +755,7 @@ contains
         do k = 1, newton_max_iter
             call assemble(h)
             G = G - Tt*(c - c_old)
+            call equilibrate()
             call band_solve(NV, nj, A, B, Dm, G, dc, st)
             if (st /= BAND_OK) exit
             lam = bounded_step(dc)
@@ -417,13 +768,16 @@ contains
         c = c_old
     end subroutine newton_step
 
-    subroutine advance(dt, t_done, stopped, ok)
-        !! Advance by dt, halving the sub-step on Newton failure and stopping at a voltage cutoff.
-        real(dp), intent(in) :: dt
+    subroutine advance(dt, t_done, stopped, ok, check, vlo, vhi)
+        !! Advance by dt at the current i_app, halving the sub-step on Newton failure. With `check`,
+        !! a sub-step that crosses a voltage cutoff by more than 0.1 mV is halved, so the step ends
+        !! within 0.1 mV of the cutoff (see simulate.advance in Python).
+        real(dp), intent(in) :: dt, vlo, vhi
+        logical, intent(in) :: check
         real(dp), intent(out) :: t_done
         logical, intent(out) :: stopped, ok
-        real(dp), parameter :: min_dt = 1.0e-6_dp
-        real(dp) :: hh, vv
+        real(dp), parameter :: min_dt = 1.0e-6_dp, event_dv = 1.0e-4_dp, event_min_dt = 1.0e-9_dp
+        real(dp) :: hh, vv, mg, c_save(NV,nj)
         logical :: good
         t_done = 0.0_dp
         hh = dt
@@ -431,6 +785,7 @@ contains
         ok = .true.
         do while (t_done < dt)
             hh = min(hh, dt - t_done)
+            c_save = c
             call newton_step(hh, good)
             if (.not. good) then
                 if (hh/2 < min_dt) then
@@ -440,12 +795,21 @@ contains
                 hh = hh/2
                 cycle
             end if
-            t_done = t_done + hh
-            vv = cell_voltage()
-            if (vv <= V_min .or. vv >= V_max) then
-                stopped = .true.
-                return
+            if (check) then
+                vv = cell_voltage()
+                mg = min(vv - vlo, vhi - vv)
+                if (mg < 0.0_dp) then
+                    if (mg < -event_dv .and. hh/2 >= event_min_dt) then
+                        c = c_save
+                        hh = hh/2
+                        cycle
+                    end if
+                    t_done = t_done + hh
+                    stopped = .true.
+                    return
+                end if
             end if
+            t_done = t_done + hh
         end do
     end subroutine advance
 
@@ -591,7 +955,9 @@ contains
         real(dp) :: i0_li, alpha
         i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
         alpha = 0.5_dp
-        if (state == 'C') then
+        if (.not. faithful) then           ! symmetric Butler-Volmer (D-12); i_app is the present current
+            li_eta = -(R*T/(alpha*F))*asinh(i_app/(2.0_dp*i0_li))
+        else if (state == 'C') then
             li_eta = 0.5_dp*log(i_app/i0_li)/(alpha*F/(R*T))
         else if (state == 'D') then
             li_eta = -(0.5_dp*log(i_app/i0_li))/(alpha*F/(R*T))
@@ -603,6 +969,27 @@ contains
     real(dp) function cell_voltage()
         cell_voltage = c(IP1,nj) + li_eta()
     end function cell_voltage
+
+    subroutine write_row_c(header, step)
+        !! Corrected-mode output row: the original columns plus the current and the step index.
+        logical, intent(in) :: header
+        integer, intent(in) :: step
+        real(dp) :: i0_li, eta
+        character(len=1) :: st
+        if (header) then
+            write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'State', 'Time', 'Voltage', 'Equivalence', 'Anode_Eta', &
+                'anode_exchange_c', 'Edge_c0', 'Current', 'Step'
+            write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'CDR', 'hours', 'Volts', 'electron_equivs', 'mV', &
+                'mA/cm2', 'mol/cm3', 'mA/cm2', '#'
+        end if
+        st = 'R'
+        if (i_app > 0) st = 'D'
+        if (i_app < 0) st = 'C'
+        i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
+        eta = li_eta()
+        write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15)') st, time/3600.0_dp, c(IP1,nj) + eta, &
+            mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c(IC,1), i_app*1.0e3_dp, step
+    end subroutine write_row_c
 
     subroutine write_row(header)
         logical, intent(in) :: header

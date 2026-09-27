@@ -24,6 +24,7 @@ Byte-identical output required reproducing the original's single-precision liter
 | Fortran vs Python, 2C and 0.5C | corrected | agree to rtol 1e-5 (rounding of the printed values) |
 | C++ vs Python, 2C and 0.5C | corrected | agree to rtol 1e-5 |
 | C++ vs Fortran, 2C and 0.5C | corrected | identical files |
+| Full protocol cycle: Fortran, C++, Python | corrected | Fortran and C++ files identical; Python agrees to rtol 1e-5 |
 
 ## 3. Physics and numerics (public, `tests/test_physics.py`)
 
@@ -37,11 +38,12 @@ Byte-identical output required reproducing the original's single-precision liter
 | Rest at equilibrium (no current, Φ₁ = U) | no change to 10⁻¹² | not tested |
 | Time-step convergence (Li-face concentration at t = 8 s, 2C, Δt = 1 … 0.0625 s) | orders 0.96, 0.98, 0.99 (backward Euler: 1) | |
 | Mesh convergence (cell voltage at 900 s, 2C, 26 … 401 nodes) | orders 2.11, 2.05, 2.02 | |
-| End of discharge | `cutoff_low` at 2.49 V, 0.7973 electron equivalents (1C and 2C) | ends on a NaN (D-3) |
+| End of discharge | `cutoff_low`, located within 0.1 mV of 2.5 V; 0.7964–0.7973 electron equivalents (2C, 1C) | ends on a NaN (D-3) |
+| Protocol cycle: 2C discharge, rest, 1C charge to 4.0 V, CV to 0.05C, rest (`tests/test_protocol.py`) | completes; the charge returns exactly the initial intercalated lithium (−θ₀·x_max, within 2 %); the final rest relaxes to the OCP within 2 mV | not applicable |
 
 ## 4. Effect of each fix on results
 
-Measured by reverting one fix at a time in corrected mode, for a 1C discharge. ΔV is the change in cell voltage over the first 0.9 h, relative to corrected mode.
+Measured by reverting one fix at a time in corrected mode, for a 1C discharge. ΔV is the change in cell voltage over the first 0.9 h, relative to corrected mode. These were measured before D-12 was introduced. D-12 changes only the reported counter-electrode overpotential, which is identical in every row, so the relative effects stand. D-12 itself shifts the cell voltage by −24.5 mV (0.1C) to −82 mV (2C); see [deviations.md](deviations.md#d-12-lithium-counter-electrode-overpotential).
 
 | Reverted | Mean ΔV | Max \|ΔV\| | Notes |
 |---|---|---|---|
@@ -55,6 +57,5 @@ For this cell (24 µm cathode, 1 M electrolyte) electrolyte transport is not lim
 
 ## 5. Not covered yet
 
-- Charge, rest and cycling protocols (task T9).
 - Comparison with experimental data. This is done privately and never published with the repository.
 - The crystal-scale (solid-diffusion) model, which the original never ran (D-8).
