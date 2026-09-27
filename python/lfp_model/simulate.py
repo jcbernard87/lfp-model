@@ -85,28 +85,101 @@ def _output_row(p: Params, state: str, t: float, c: np.ndarray, mAhg: float):
     return (state, t / float(3600), c[-1, P1] + eta, equiv, eta * 1.0e3, i0_li * 1.0e3, c[0, C])
 
 
-def run(p: Params, *, backend: str = "fortran", pivot: str = "legacy", max_steps: Optional[int] = None) -> Result:
-    """Constant-current discharge, as in the original program."""
+class SolverFailure(RuntimeError):
+    pass
+
+
+def newton_step(asm: Assembler, c_old: np.ndarray, dt: float, *, backend: str = "fortran",
+                pivot: str = "partial") -> tuple[np.ndarray, int]:
+    """One backward-Euler step solved to convergence with Newton's method (corrected mode, fixes D-7)."""
+    p = asm.p
+    T = asm.time_terms(dt)
+    scale = np.array([p.c_bulk, 1.0, 1.0, kinetics.cs_max(p)])
+    c = c_old.copy()
+    for k in range(1, p.newton_max_iter + 1):
+        A, B, D, G, _ = asm.assemble(c, dt)
+        G = G - T * (c - c_old)
+        try:
+            dc = bandsolver.solve(A, B, D, G, pivot=pivot, backend=backend)
+        except (bandsolver.NonFiniteError, bandsolver.SingularBlockError) as e:
+            raise SolverFailure(str(e)) from e
+        lam = _bounded_step(c, dc, kinetics.cs_max(p))
+        c = c + lam * dc
+        if lam == 1.0 and np.max(np.abs(dc) / scale) <= p.newton_tol:
+            return c, k
+    raise SolverFailure(f"Newton did not converge in {p.newton_max_iter} iterations")
+
+
+def _bounded_step(c, dc, csmax, keep=0.9):
+    """Largest step length <= 1 keeping 0 < c, 0 < cs < cs_max (moves at most `keep` of the way to a bound)."""
+    lam = 1.0
+    for col, lo, hi in ((C, 0.0, None), (CS, 0.0, csmax)):
+        x, d = c[:, col], dc[:, col]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            neg = d < 0
+            if np.any(neg):
+                lam = min(lam, float(np.min(keep * (x[neg] - lo) / -d[neg])))
+            if hi is not None:
+                pos = d > 0
+                if np.any(pos):
+                    lam = min(lam, float(np.min(keep * (hi - x[pos]) / d[pos])))
+    return max(lam, 0.0)
+
+
+def advance(asm: Assembler, c: np.ndarray, dt: float, *, backend: str, pivot: str,
+            stop=None, min_dt: float = 1.0e-6):
+    """Advance by dt with backward Euler, halving the sub-step on Newton failure.
+
+    `stop(c)` is checked after every sub-step; when it returns True the step ends early.
+    Returns (c, time advanced, stopped).
+    """
+    t_done, h = 0.0, dt
+    while t_done < dt:
+        h = min(h, dt - t_done)
+        try:
+            c_new, _ = newton_step(asm, c, h, backend=backend, pivot=pivot)
+        except SolverFailure:
+            if h / 2 < min_dt:
+                raise
+            h = h / 2
+            continue
+        c, t_done = c_new, t_done + h
+        if stop is not None and stop(c):
+            return c, t_done, True
+    return c, t_done, False
+
+
+def run(p: Params, *, backend: str = "fortran", pivot: Optional[str] = None, max_steps: Optional[int] = None) -> Result:
+    """Constant-current discharge (or charge for a negative C-rate).
+
+    Faithful mode reproduces the original program step for step: one linearized solve per
+    step, the original write schedule and exit tests, no voltage cutoff. Corrected mode
+    solves each step with Newton's method and stops at the voltage cutoffs.
+    """
+    faithful = p.mode == "faithful"
+    if pivot is None:
+        pivot = "legacy" if faithful else "partial"
     asm = Assembler(p)
     c = initial_state(p)
     dt = p.dt
     t = 0.0
     mAhg = 0.0
     state = "D" if p.C_rate >= 0 else "C"
-    last_write = 0            # integer in the original (deviation D-4)
+    last_write = 0 if faithful else 0.0     # an integer in the original (deviation D-4)
     write_every = p.t_max / p.n_steps / 200
     dc = np.zeros_like(c)
     res = Result()
     n = p.n_steps if max_steps is None else max_steps
 
     for it in range(1, n + 1):
+        row = None
         if it == 1:
-            res.rows.append(_output_row(p, state, t, c, mAhg))
+            row = _output_row(p, state, t, c, mAhg)
         elif (t - last_write) / 3600 >= write_every:
-            res.rows.append(_output_row(p, state, t, c, mAhg))
-            last_write = int(t - dt)
+            row = _output_row(p, state, t, c, mAhg)
+            last_write = int(t - dt) if faithful else t
         elif it >= p.n_steps:
-            res.rows.append(_output_row(p, state, t, c, mAhg))
+            row = _output_row(p, state, t, c, mAhg)
         elif c[-1, P1] >= 99.0 and state == "C":
             res.rows.append(_output_row(p, state, t, c, mAhg))
             res.exit_reason = "end_of_charge"
@@ -119,6 +192,14 @@ def run(p: Params, *, backend: str = "fortran", pivot: str = "legacy", max_steps
             res.rows.append(_output_row(p, state, t, c, mAhg))
             res.exit_reason = "max_time"
             break
+        if not faithful:
+            v = _output_row(p, state, t, c, mAhg)
+            if v[2] <= p.V_min or v[2] >= p.V_max:
+                res.rows.append(v)
+                res.exit_reason = "cutoff_low" if v[2] <= p.V_min else "cutoff_high"
+                break
+        if row is not None:
+            res.rows.append(row)
 
         # Coulomb counting happens before the solve in the original
         if state == "D":
@@ -126,14 +207,34 @@ def run(p: Params, *, backend: str = "fortran", pivot: str = "legacy", max_steps
         elif state == "C":
             mAhg = mAhg - 1000.0 * p.i_specific * dt / 3600.0
 
-        A, B, D, G, _ = asm.assemble(c, dt)
-        try:
-            dc = bandsolver.solve(A, B, D, G, pivot=pivot, backend=backend)
-        except bandsolver.NonFiniteError:
-            dc = np.full_like(c, np.nan)
-        except bandsolver.SingularBlockError:
-            dc = np.full_like(c, np.nan)
-        c = c + dc
+        if faithful:
+            A, B, D, G, _ = asm.assemble(c, dt)
+            try:
+                dc = bandsolver.solve(A, B, D, G, pivot=pivot, backend=backend)
+            except (bandsolver.NonFiniteError, bandsolver.SingularBlockError):
+                dc = np.full_like(c, np.nan)
+            c = c + dc
+        else:
+            def beyond_cutoff(cn):
+                v = _output_row(p, state, t, cn, mAhg)[2]
+                return v <= p.V_min or v >= p.V_max
+            try:
+                c_new, h, stopped = advance(asm, c, dt, backend=backend, pivot=pivot, stop=beyond_cutoff)
+            except SolverFailure:
+                res.exit_reason = "solver_fail"
+                res.steps = it - 1
+                break
+            dc = c_new - c
+            c = c_new
+            if stopped:
+                sign = 1.0 if state == "D" else -1.0
+                mAhg = mAhg - sign * 1000.0 * p.i_specific * (dt - h) / 3600.0
+                t = t + h
+                v = _output_row(p, state, t, c, mAhg)
+                res.rows.append(v)
+                res.exit_reason = "cutoff_low" if v[2] <= p.V_min else "cutoff_high"
+                res.steps = it
+                break
         res.steps = it
 
         if state == "R":

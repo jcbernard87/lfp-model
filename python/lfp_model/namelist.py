@@ -24,8 +24,8 @@ GROUPS = {
     "electrolyte": ["D", "t_plus", "c_bulk", "z_plus", "z_minus"],
     "active": ["sigma", "M", "rho", "Q_th", "R_p", "k_rxn", "alpha_a", "alpha_c", "k_Li", "c_Li_ref"],
     "constants": ["R", "T", "F"],
-    "operation": ["C_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps"],
-    "numerics": ["fd_step", "mode"],
+    "operation": ["C_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps", "V_min", "V_max"],
+    "numerics": ["fd_step", "newton_tol", "newton_max_iter", "mode"],
     "output": ["file"],
 }
 

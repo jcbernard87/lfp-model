@@ -60,8 +60,12 @@ class Params:
     cs_init: float = 1.0e-5        # [mol/cm3]
     t_max: float = 36000.0         # [s]
     n_steps: int = 36000
+    V_min: float = 2.5             # [V] lower cutoff (corrected mode; the original has none, D-3)
+    V_max: float = 4.2             # [V] upper cutoff (corrected mode)
     # --- numerics ---
     fd_step: float = 1.0e-6        # absolute step of the finite-difference reaction derivatives
+    newton_tol: float = 1.0e-10    # corrected mode: scaled update tolerance per time step (D-7)
+    newton_max_iter: int = 25
     mode: str = "faithful"
 
     def __post_init__(self):

@@ -107,6 +107,18 @@ class Assembler:
         d33 = -(eps * p.F ** 2 * k * cface)
         return d31, f31, d33
 
+    def time_terms(self, dt: float) -> np.ndarray:
+        """Storage coefficients T (nj, 4): the time-derivative part of each row is T * (c - c_old)."""
+        p, m = self.p, self.mesh
+        s, nj = m.s, m.nj
+        T = np.zeros((nj, N))
+        T[0, CS] = -(p.eps_AM / dt)
+        T[1:s, C] = -(p.eps_sep / dt * m.dx[1:s])
+        T[1:s, CS] = -((1.0 - p.eps_sep) / dt)
+        T[s + 1:nj - 1, C] = -((p.eps / dt) * m.dx[s + 1:nj - 1])
+        T[s:, CS] = -(p.eps_AM / dt)
+        return T
+
     # -- assembly ----------------------------------------------------------------
     def assemble(self, c: np.ndarray, dt: float):
         """Return (A, B, D, G, i_rxn) for state c with shape (nj, 4)."""
@@ -122,7 +134,8 @@ class Assembler:
         cE[:-1] = m.aE[:-1, None] * c[1:] + (1.0 - m.aE[:-1, None]) * c[:-1]
         gE[:-1] = m.bE[:-1, None] * (c[1:] - c[:-1])
 
-        i, di_c, di_cs, di_p1, di_p2 = kinetics.reaction_derivatives(p, c[:, C], c[:, CS], c[:, P1], c[:, P2])
+        rates = kinetics.reaction_derivatives if p.mode == "faithful" else kinetics.reaction_derivatives_analytic
+        i, di_c, di_cs, di_p1, di_p2 = rates(p, c[:, C], c[:, CS], c[:, P1], c[:, P2])
         dI = np.stack([di_c, di_p1, di_p2, di_cs], axis=1)   # derivative w.r.t. each unknown column
 
         dW = np.zeros((nj, N, N)); dE = np.zeros((nj, N, N))

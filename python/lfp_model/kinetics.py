@@ -80,6 +80,30 @@ def reaction_derivatives(p: Params, c, cs, phi1, phi2):
     return i, d_c, d_cs, d_p1, d_p2
 
 
+def ocp_slope(p: Params, cs):
+    """dU/dcs [V cm3/mol]."""
+    a0, a1, b1, c1, a2, b2, c2 = _ocp_coeffs(p)
+    th = theta(p, cs)
+    dth = 1.0 / (p.mol_vol * (p.M * p.Q_th * 1000.0 * _lit36(p) / p.F))
+    du = a1 * (-b1) / (1.0 + (-(b1 * th) + c1) ** 2) - a2 * (-b2) / (1.0 + (-(b2 * th) + c2) ** 2)
+    return du * dth
+
+
+def reaction_derivatives_analytic(p: Params, c, cs, phi1, phi2):
+    """Rate and exact derivatives (d/dc, d/dcs, d/dphi1, d/dphi2); used in corrected mode (fixes D-6)."""
+    rt = p.R * p.T
+    A_, B_ = p.alpha_a * p.F / rt, p.alpha_c * p.F / rt
+    eta = phi1 - phi2 - ocp(p, cs)
+    i0 = exchange_current(p, c, cs)
+    with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+        ea, ec = np.exp(A_ * eta), np.exp(-B_ * eta)
+        i = i0 * (ea - ec)
+        di_deta = i0 * (A_ * ea + B_ * ec)
+        d_c = p.alpha_a * i / c
+        d_cs = i * (-p.alpha_a / (cs_max(p) - cs) + p.alpha_c / cs) - di_deta * ocp_slope(p, cs)
+    return i, d_c, d_cs, di_deta, -di_deta
+
+
 def li_exchange_current(p: Params, c):
     """Exchange current density of the lithium counter electrode [A/cm2] (output only)."""
     return p.F * p.k_Li * (c ** 0.5) * (p.c_Li_ref ** 0.5)
