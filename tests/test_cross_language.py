@@ -34,3 +34,25 @@ def test_fortran_matches_python(fortran_exe, run_native, tmp_path, C_rate, mode)
         sp, vp = read_tv(p_out)
         assert sf == sp and vf.shape == vp.shape
         np.testing.assert_allclose(vf, vp, rtol=1e-5, atol=1e-9, equal_nan=True)
+
+
+@pytest.mark.parametrize("mode", ["faithful", "corrected"])
+@pytest.mark.parametrize("C_rate", [2.0, 0.5])
+def test_cpp_matches_python(cpp_exe, run_native, tmp_path, C_rate, mode):
+    c_out = run_native(cpp_exe, C_rate=C_rate, mode=mode, name=f"c_{mode}_{C_rate}.txt")
+    p_out = python_tv(tmp_path, C_rate, mode)
+    if mode == "faithful":
+        assert c_out.read_bytes() == p_out.read_bytes()
+    else:
+        sc, vc = read_tv(c_out)
+        sp, vp = read_tv(p_out)
+        assert sc == sp and vc.shape == vp.shape
+        np.testing.assert_allclose(vc, vp, rtol=1e-5, atol=1e-9, equal_nan=True)
+
+
+@pytest.mark.parametrize("C_rate", [2.0, 0.5])
+def test_cpp_matches_fortran_corrected(cpp_exe, fortran_exe, run_native, C_rate):
+    """The two compiled programs implement identical arithmetic, so even corrected runs match exactly."""
+    a = run_native(cpp_exe, C_rate=C_rate, mode="corrected", name="c.txt")
+    b = run_native(fortran_exe, C_rate=C_rate, mode="corrected", name="f.txt")
+    assert a.read_bytes() == b.read_bytes()
