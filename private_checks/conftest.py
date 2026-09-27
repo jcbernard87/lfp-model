@@ -24,3 +24,7 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture
 def oracle_dir() -> Path:
     return Path(ORACLE_DIR)
+
+
+# the compiled-program fixtures are shared with the public tests
+from tests.conftest import cpp_exe, fortran_exe, run_native  # noqa: E402,F401
