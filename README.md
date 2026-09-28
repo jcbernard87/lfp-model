@@ -69,7 +69,7 @@ The model is a port of the author's PhD research code. The port was checked for 
 - **`mode = 'corrected'`** (recommended) fixes every defect found. The fixes are listed with evidence and their measured effect in [docs/deviations.md](docs/deviations.md).
 - **`mode = 'faithful'`** reproduces the original program exactly, defects included. It is kept for comparison with earlier work. In faithful mode all three implementations reproduce the original program's output files byte for byte ([docs/validation.md](docs/validation.md)). Faithful mode runs only the original constant-current discharge.
 
-`default.nml` selects faithful mode so that a first run reproduces the original. Set `mode = 'corrected'` for new work.
+`input/default.nml` uses corrected mode. [`input/examples/faithful.nml`](input/examples/faithful.nml) reproduces the original.
 
 ## Documentation
 
@@ -90,7 +90,7 @@ The public tests compute everything they need. They cover cross-language agreeme
 
 ## Status
 
-Version 0.1.0, in development. The inactive crystal-scale (solid-diffusion) submodel of the original code is not ported (deviation D-8). Deviations D-9 and D-12 involve modelling choices awaiting the author's confirmation.
+Version 0.1.0. The original code's inactive crystal-scale (solid-diffusion) submodel is not ported (deviation D-8).
 
 ## License and citation
 

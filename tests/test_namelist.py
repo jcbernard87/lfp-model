@@ -19,9 +19,14 @@ def test_parse_syntax():
     assert d == {"g": {"a": 1.5e-3, "b": 22, "s": "x ! not a comment", "t": True}}
 
 
-def test_default_input_matches_faithful_defaults():
+def test_default_input_matches_corrected_defaults():
     p, extra = load(ROOT / "input" / "default.nml")
     assert extra["file"] == "Time_Voltage.txt"
+    assert p == Params(mode="corrected")
+
+
+def test_faithful_example_matches_faithful_defaults():
+    p, _ = load(ROOT / "input" / "examples" / "faithful.nml")
     assert p == Params.faithful()
 
 

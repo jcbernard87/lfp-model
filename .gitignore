@@ -12,3 +12,6 @@ out/
 !requirements*.txt
 private/
 *.egg-info/
+
+# private development notes live outside the repository
+LFP_LOOP.md

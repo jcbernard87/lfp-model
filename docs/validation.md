@@ -1,6 +1,6 @@
 # Validation
 
-All numbers below were measured on macOS arm64 (gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5, bandsolver 0.1.1) on 2026-09-27. The public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
+All numbers below were measured before deviation D-9 was applied to corrected mode, except the test results, which are re-run on every change. D-9 halves the active volume fraction, so per-area quantities (currents, a) change, but none of the checks depend on it. All numbers were measured on macOS arm64 (gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5, bandsolver 0.1.1) on 2026-09-27. The public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
 
 ## 1. Reproduction of the original research code (private)
 

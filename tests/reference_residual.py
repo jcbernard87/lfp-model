@@ -45,7 +45,7 @@ def residual(p: Params, c: np.ndarray, c_old: np.ndarray, dt: float) -> np.ndarr
     R[0, 0] = I / F - N_plus[0]
     R[0, 1] = 0.0 - i1[0]
     R[0, 2] = c[0, 2]
-    R[0, 3] = -p.eps_AM * dcdt[0, 3]
+    R[0, 3] = -p.vf_AM * dcdt[0, 3]
 
     j = np.arange(1, s)                       # separator interior
     R[j, 0] = N_plus[j - 1] - N_plus[j] - p.eps_sep * dx[j] * dcdt[j, 0]
@@ -68,7 +68,7 @@ def residual(p: Params, c: np.ndarray, c_old: np.ndarray, dt: float) -> np.ndarr
     R[n, 2] = i2[n - 1]
 
     j = np.arange(s, nj)                      # uniform-particle solid balance
-    R[j, 3] = -p.eps_AM * dcdt[j, 3] - a * i_n[j] / F
+    R[j, 3] = -p.vf_AM * dcdt[j, 3] - a * i_n[j] / F
     return R
 
 

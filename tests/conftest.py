@@ -22,9 +22,10 @@ def run_native(tmp_path):
     def _run(exe, *, C_rate=1.0, mode="faithful", name="out.txt", steps=None):
         text = (ROOT / "input" / "default.nml").read_text()
         if steps:
-            text += f"&protocol\n  steps = '{steps}'\n/\n"
+            text, n = re.subn(r"steps = '[^']*'", f"steps = '{steps}'", text)
+            assert n == 1
         text = re.sub(r"C_rate = [0-9.]+", f"C_rate = {C_rate}", text)
-        text = text.replace("mode = 'faithful'", f"mode = '{mode}'")
+        text = re.sub(r"mode = '\w+'", f"mode = '{mode}'", text)
         text = text.replace("file = 'Time_Voltage.txt'", f"file = '{name}'")
         nml = tmp_path / f"in_{name}.nml"
         nml.write_text(text)

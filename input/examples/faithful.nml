@@ -1,0 +1,30 @@
+! LFP half cell: Li foil | separator | porous LiFePO4 cathode.
+! Units: cm, s, mol, A, V. See docs/parameters.md for every parameter.
+! Faithful mode: reproduces the original research code exactly, including the
+! defects in docs/deviations.md. It runs only the original constant-current
+! discharge, ending when the solver fails (deviation D-3). Change C_rate to rerun
+! another rate. For new work use input/default.nml (corrected mode).
+
+&cell
+  L_cath = 24.0d-4, L_sep = 25.0d-4, nj = 101, sep_node = 22
+  eps = 0.5, eps_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5
+/
+&electrolyte
+  D = 2.0d-6, t_plus = 0.25, c_bulk = 1.0d-3
+/
+&active
+  sigma = 3.0d-3, M = 125.759, rho = 3.6, Q_th = 0.170, R_p = 200.0d-7
+  alpha_a = 0.5, alpha_c = 0.5
+/
+&operation
+  C_rate = 1.0            ! 1/h, positive = discharge
+  phi1_init = 3.6, phi2_init = 0.0, cs_init = 1.0d-5
+  t_max = 36000.0, n_steps = 36000
+/
+&numerics
+  fd_step = 1.0d-6
+  mode = 'faithful'
+/
+&output
+  file = 'Time_Voltage.txt'
+/

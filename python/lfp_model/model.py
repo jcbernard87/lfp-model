@@ -113,11 +113,11 @@ class Assembler:
         p, m = self.p, self.mesh
         s, nj = m.s, m.nj
         T = np.zeros((nj, N))
-        T[0, CS] = -(p.eps_AM / dt)
+        T[0, CS] = -(p.vf_AM / dt)
         T[1:s, C] = -(p.eps_sep / dt * m.dx[1:s])
         T[1:s, CS] = -((1.0 - p.eps_sep) / dt)
         T[s + 1:nj - 1, C] = -((p.eps / dt) * m.dx[s + 1:nj - 1])
-        T[s:, CS] = -(p.eps_AM / dt)
+        T[s:, CS] = -(p.vf_AM / dt)
         return T
 
     # -- assembly ----------------------------------------------------------------
@@ -184,7 +184,7 @@ class Assembler:
         d11, f11, d13 = self._cation(self.eps_sep_face, tS, cE[j0, C], gE[j0, P2])
         dE[j0, C, C] = d11; fE[j0, C, C] = f11; dE[j0, C, P2] = d13
         g[j0, C] = -I / F + (dE[j0, C, C] * gE[j0, C] + fE[j0, C, C] * cE[j0, C])
-        rj[j0, CS, CS] = 0.0 - 1.0 * p.eps_AM / dt
+        rj[j0, CS, CS] = 0.0 - 1.0 * p.vf_AM / dt
         dE[j0, P1, P1] = -(1.0 - self.eps_sep_face) * sig
         g[j0, P1] = self.phi1_row_sign * dE[j0, P1, P1] * gE[j0, P1]
         rj[j0, P2, P2] = 1.0
@@ -211,7 +211,7 @@ class Assembler:
         # ---- solid concentration: interface, cathode interior and collector ---------
         jr = slice(s, nj)
         rj[jr, CS, :] = -(a * dI[jr] / F)
-        rj[jr, CS, CS] = -(a * dI[jr, CS] / F) - 1.0 * p.eps_AM / dt
+        rj[jr, CS, CS] = -(a * dI[jr, CS] / F) - 1.0 * p.vf_AM / dt
         g[jr, CS] = +(a * i[jr] / F)
 
         # ---- cathode interior -------------------------------------------------------

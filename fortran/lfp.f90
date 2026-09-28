@@ -23,6 +23,7 @@ program lfp
     real(dp) :: L_cath = 24.0e-4_dp, L_sep = 25.0e-4_dp
     integer  :: nj = 101, sep_node = 22
     real(dp) :: eps = 0.5_dp, eps_AM = 0.8_dp, eps_sep = 0.39_dp, tau_sep = 4.0_dp, bruggeman = -0.5_dp
+    real(dp) :: f_AM = 0.8_dp          ! corrected mode: active fraction of the solid phase (D-9)
     real(dp) :: D = 2.0e-6_dp, t_plus = 0.25_dp, c_bulk = 1.0e-3_dp, z_plus = 1.0_dp, z_minus = -1.0_dp
     real(dp) :: sigma = 3.0e-3_dp, M = 125.759_dp, rho = 3.6_dp, Q_th = 0.170_dp, R_p = 200.0e-7_dp
     real(dp) :: k_rxn = -1.0_dp                    ! < 0: use the default for the chosen mode
@@ -41,7 +42,7 @@ program lfp
     real(dp) :: write_interval = 18.0_dp               ! [s], corrected mode
     character(len=256) :: file = 'Time_Voltage.txt'
 
-    namelist /cell/ L_cath, L_sep, nj, sep_node, eps, eps_AM, eps_sep, tau_sep, bruggeman
+    namelist /cell/ L_cath, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman
     namelist /electrolyte/ D, t_plus, c_bulk, z_plus, z_minus
     namelist /active/ sigma, M, rho, Q_th, R_p, k_rxn, alpha_a, alpha_c, k_Li, c_Li_ref
     namelist /constants/ R, T, F
@@ -55,7 +56,7 @@ program lfp
     real(dp) :: lit36, ocp_c(7), spec_a, tortuosity, i_spec, i_app, eps_sep_face, phi1_sign
     logical  :: full_current
     real(dp) :: dcat_s, dan_s, ucat_s, uan_s, dcat_c, dan_c, ucat_c, uan_c
-    real(dp) :: mass_area, i_1C
+    real(dp) :: mass_area, i_1C, vf_AM   ! vf_AM: active volume fraction (eps_AM or f_AM*(1-eps))
     real(dp), parameter :: THETA_REG = 1.0e-6_dp       ! D-13 regularization threshold
 
     ! ---------------- protocol (corrected mode) ----------------
@@ -561,11 +562,16 @@ contains
             full_current = .true.
         end if
 
-        spec_a = 3*eps_AM/R_p
+        if (faithful) then
+            vf_AM = eps_AM
+        else
+            vf_AM = f_AM*(1.0_dp - eps)
+        end if
+        spec_a = 3*vf_AM/R_p
         tortuosity = eps**bruggeman
         i_spec = Q_th*C_rate
-        i_app = i_spec*L_cath*eps_AM*rho
-        mass_area = L_cath*eps_AM*rho
+        i_app = i_spec*L_cath*vf_AM*rho
+        mass_area = L_cath*vf_AM*rho
         i_1C = Q_th*mass_area
 
         ! ion diffusivities and mobilities, then effective values per region
@@ -698,11 +704,11 @@ contains
         real(dp), intent(in) :: dt
         real(dp), intent(out) :: Tt(NV,nj)
         Tt = 0.0_dp
-        Tt(ICS,1) = -(eps_AM/dt)
+        Tt(ICS,1) = -(vf_AM/dt)
         Tt(IC,2:s-1) = -(eps_sep/dt*dx(2:s-1))
         Tt(ICS,2:s-1) = -((1.0_dp - eps_sep)/dt)
         Tt(IC,s+1:nj-1) = -((eps/dt)*dx(s+1:nj-1))
-        Tt(ICS,s:nj) = -(eps_AM/dt)
+        Tt(ICS,s:nj) = -(vf_AM/dt)
     end subroutine time_terms
 
     real(dp) function bounded_step(dcc)
@@ -854,7 +860,7 @@ contains
                 fE(IC,IC)  = -(eps_sep_face*z_plus*ucat_s*F*gE(IP2))
                 dE(IC,IP2) = -(eps_sep_face*z_plus*ucat_s*F*cE(IC))
                 gg(IC) = -i_app/F + (dE(IC,IC)*gE(IC) + fE(IC,IC)*cE(IC))
-                rj(ICS,ICS) = 0.0_dp - 1.0_dp*eps_AM/dt
+                rj(ICS,ICS) = 0.0_dp - 1.0_dp*vf_AM/dt
                 dE(IP1,IP1) = -(1.0_dp - eps_sep_face)*sigma
                 gg(IP1) = phi1_sign*dE(IP1,IP1)*gE(IP1)
                 rj(IP2,IP2) = 1.0_dp
@@ -938,14 +944,14 @@ contains
     end function current
 
     subroutine solid_row(i, di, dt, rj, gg)
-        !! eps_AM dcs/dt = -a i_n / F  (uniform particles)
+        !! vf_AM dcs/dt = -a i_n / F  (uniform particles)
         real(dp), intent(in) :: i, di(NV), dt
         real(dp), intent(inout) :: rj(NV,NV), gg(NV)
         integer :: k
         do k = 1, NV
             rj(ICS,k) = -(spec_a*di(k)/F)
         end do
-        rj(ICS,ICS) = -(spec_a*di(ICS)/F) - 1.0_dp*eps_AM/dt
+        rj(ICS,ICS) = -(spec_a*di(ICS)/F) - 1.0_dp*vf_AM/dt
         gg(ICS) = +(spec_a*i/F)
     end subroutine solid_row
 

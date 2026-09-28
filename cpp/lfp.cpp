@@ -181,6 +181,7 @@ struct Params {
     double L_cath = 24.0e-4, L_sep = 25.0e-4;
     int nj = 101, sep_node = 22;
     double eps = 0.5, eps_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5;
+    double f_AM = 0.8;  // corrected mode: active fraction of the solid phase (D-9)
     double D = 2.0e-6, t_plus = 0.25, c_bulk = 1.0e-3, z_plus = 1.0, z_minus = -1.0;
     double sigma = 3.0e-3, M = 125.759, rho = 3.6, Q_th = 0.170, R_p = 200.0e-7;
     double k_rxn = -1.0;  // < 0: default for the chosen mode
@@ -222,7 +223,7 @@ Params read_input(const std::string& path) {
     }
     Params p;
     std::map<std::string, double*> reals = {
-        {"l_cath", &p.L_cath}, {"l_sep", &p.L_sep}, {"eps", &p.eps}, {"eps_am", &p.eps_AM},
+        {"l_cath", &p.L_cath}, {"l_sep", &p.L_sep}, {"eps", &p.eps}, {"eps_am", &p.eps_AM}, {"f_am", &p.f_AM},
         {"eps_sep", &p.eps_sep}, {"tau_sep", &p.tau_sep}, {"bruggeman", &p.bruggeman}, {"d", &p.D},
         {"t_plus", &p.t_plus}, {"c_bulk", &p.c_bulk}, {"z_plus", &p.z_plus}, {"z_minus", &p.z_minus},
         {"sigma", &p.sigma}, {"m", &p.M}, {"rho", &p.rho}, {"q_th", &p.Q_th}, {"r_p", &p.R_p},
@@ -334,6 +335,7 @@ struct Model {
     Params p;
     bool faithful;
     double lit36, ocp_c[7], spec_a, tortuosity, i_spec, eps_sep_face, phi1_sign, mass_area, i_1C;
+    double vf_AM;  // active volume fraction: eps_AM (faithful) or f_AM*(1-eps) (corrected)
     double i_app;  // applied current density [A/cm2]; changes step by step in corrected mode
     bool full_current;
     double dcat_s, dan_s, ucat_s, uan_s, dcat_c, dan_c, ucat_c, uan_c;
@@ -363,11 +365,12 @@ struct Model {
             phi1_sign = 1.0;
             full_current = true;
         }
-        spec_a = 3 * p.eps_AM / p.R_p;
+        vf_AM = faithful ? p.eps_AM : p.f_AM * (1.0 - p.eps);
+        spec_a = 3 * vf_AM / p.R_p;
         tortuosity = std::pow(p.eps, p.bruggeman);
         i_spec = p.Q_th * p.C_rate;
-        i_app = i_spec * p.L_cath * p.eps_AM * p.rho;
-        mass_area = p.L_cath * p.eps_AM * p.rho;
+        i_app = i_spec * p.L_cath * vf_AM * p.rho;
+        mass_area = p.L_cath * vf_AM * p.rho;
         i_1C = p.Q_th * mass_area;
         const double t_an = 1.0 - p.t_plus;
         const double d_cat = p.D * (1.0 + (t_an / p.t_plus)) / (2.0 * t_an / p.t_plus);
@@ -452,10 +455,10 @@ struct Model {
     std::vector<double> time_terms(double dt) const {
         const int nj = p.nj;
         std::vector<double> T(static_cast<std::size_t>(nj) * NV, 0.0);
-        T[ICS] = -(p.eps_AM / dt);
+        T[ICS] = -(vf_AM / dt);
         for (int j = 1; j < s; ++j) { T[j * NV + IC] = -(p.eps_sep / dt * dx[j]); T[j * NV + ICS] = -((1.0 - p.eps_sep) / dt); }
         for (int j = s + 1; j < nj - 1; ++j) T[j * NV + IC] = -((p.eps / dt) * dx[j]);
-        for (int j = s; j < nj; ++j) T[j * NV + ICS] = -(p.eps_AM / dt);
+        for (int j = s; j < nj; ++j) T[j * NV + ICS] = -(vf_AM / dt);
         return T;
     }
     // largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound)
@@ -492,7 +495,7 @@ struct Model {
     }
     void solid_row(double i, const double di[NV], double dt, Mat& rj, double* g) const {
         for (int k = 0; k < NV; ++k) rj[ICS][k] = -(spec_a * di[k] / p.F);
-        rj[ICS][ICS] = -(spec_a * di[ICS] / p.F) - 1.0 * p.eps_AM / dt;
+        rj[ICS][ICS] = -(spec_a * di[ICS] / p.F) - 1.0 * vf_AM / dt;
         g[ICS] = +(spec_a * i / p.F);
     }
 
@@ -519,7 +522,7 @@ struct Model {
                 fE[IC][IC] = -(eps_sep_face * p.z_plus * ucat_s * F * gE[IP2]);
                 dE[IC][IP2] = -(eps_sep_face * p.z_plus * ucat_s * F * cE[IC]);
                 g[IC] = -i_app / F + (dE[IC][IC] * gE[IC] + fE[IC][IC] * cE[IC]);
-                rj[ICS][ICS] = 0.0 - 1.0 * p.eps_AM / dt;
+                rj[ICS][ICS] = 0.0 - 1.0 * vf_AM / dt;
                 dE[IP1][IP1] = -(1.0 - eps_sep_face) * sig;
                 g[IP1] = phi1_sign * dE[IP1][IP1] * gE[IP1];
                 rj[IP2][IP2] = 1.0;

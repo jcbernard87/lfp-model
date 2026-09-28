@@ -27,7 +27,8 @@ class Params:
     nj: int = 101                  # total nodes
     sep_node: int = 22             # separator/cathode interface node (1-based, as in the original)
     eps: float = 0.5               # cathode porosity
-    eps_AM: float = 0.8            # active-material volume fraction
+    eps_AM: float = 0.8            # faithful mode: active-material volume fraction, as in the original
+    f_AM: float = 0.8              # corrected mode: active-material fraction of the solid phase (D-9)
     eps_sep: float = 0.39          # separator porosity
     tau_sep: float = 4.0           # separator tortuosity
     bruggeman: float = -0.5        # cathode tortuosity = eps**bruggeman
@@ -104,9 +105,19 @@ class Params:
         return self.rho / self.M
 
     @property
+    def vf_AM(self) -> float:
+        """Active-material volume fraction of the electrode.
+
+        Faithful mode uses eps_AM directly, as the original did (with eps = 0.5 the volumes then
+        add up to 1.3; deviation D-9). Corrected mode treats f_AM as the active fraction of the
+        solid phase: vf_AM = f_AM (1 - eps).
+        """
+        return self.eps_AM if self.mode == "faithful" else self.f_AM * (1.0 - self.eps)
+
+    @property
     def spec_a(self) -> float:
-        """Specific interfacial area a = 3 eps_AM / R_p [1/cm]."""
-        return 3 * self.eps_AM / self.R_p
+        """Specific interfacial area a = 3 vf_AM / R_p [1/cm]."""
+        return 3 * self.vf_AM / self.R_p
 
     @property
     def tortuosity(self) -> float:
@@ -115,7 +126,7 @@ class Params:
     @property
     def mass_area(self) -> float:
         """Active-material loading [g/cm2]."""
-        return self.L_cath * self.eps_AM * self.rho
+        return self.L_cath * self.vf_AM * self.rho
 
     @property
     def i_1C(self) -> float:
@@ -130,7 +141,7 @@ class Params:
     @property
     def i_app(self) -> float:
         """Applied current density [A/cm2]."""
-        return self.i_specific * self.L_cath * self.eps_AM * self.rho
+        return self.i_specific * self.L_cath * self.vf_AM * self.rho
 
     @property
     def dt(self) -> float:

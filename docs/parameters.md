@@ -13,7 +13,8 @@ These are the default values in the original research code. The source line (`L�
 | `NJ` | | 101 | | L35 | total nodes |
 | `SEP_NODE` | | 22 | | L108 | separator/cathode interface node |
 | `eps` | ε | 0.5 | | L126 | cathode porosity |
-| `volfrac_AM` | ε_AM | 0.8 (stored 0.800000011920929) | | L125 | active-material volume fraction. Note that ε + ε_AM = 1.3 > 1. **[D-9]** |
+| `volfrac_AM` | ε_AM (`eps_AM`) | 0.8 (stored 0.800000011920929) | | L125 | faithful mode: active-material volume fraction, as in the original (ε + ε_AM = 1.3 > 1, **[D-9]**) |
+| (new) | f_AM (`f_AM`) | 0.8 | | — | corrected mode: active fraction of the solid phase; active volume fraction f_AM·(1−ε) = 0.4 **[D-9]** |
 | `tortuosity` | τ | ε^(−1/2) | | L128 | Bruggeman |
 | `eps_sep` | ε_sep | 0.39 (stored 0.38999998569488525) | | L107 | |
 | `sep_tortuosity` | τ_sep | 4.0 | | L110 | |

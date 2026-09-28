@@ -15,6 +15,7 @@ The faithful mode (`mode = "faithful"`) reproduces the original program, includi
 | D-7 | each backward-Euler step is solved with Newton's method (scaled update ≤ 10⁻¹⁰), with the step limited to 0.1 V of potential change per iteration and sub-step halving on failure |
 | D-10 | the out-of-bounds read is not ported |
 | D-11 | the ionic-current residual includes the diffusion current |
+| D-9 | the active-material input is `f_AM`, the active fraction of the **solid phase**; the active volume fraction is f_AM·(1−ε) = 0.4 by default |
 | D-12 | the Li counter electrode is a symmetric Butler–Volmer interface, η = (RT/(αF))·asinh(I/(2i₀)) |
 | D-13 | below θ = 10⁻⁶ (or 1 − θ < 10⁻⁶), c_s^α is replaced by a C¹ quadratic with a finite slope; results above that threshold are unchanged |
 
@@ -30,9 +31,9 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 | D-6 | fixed | Reaction derivatives use absolute FD steps of 10⁻⁶ (≈ 4 % of c_s,max, 100 % of the initial c_s) |
 | D-7 | fixed | One linearized solve per time step (no Newton iteration); nonlinearity error is not controlled |
 | D-8 | kept (not ported; see §D-8) | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
-| D-9 | candidate | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
+| D-9 | fixed (author's decision) | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
 | D-11 | fixed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
-| D-12 | fixed (needs author confirmation) | The lithium-anode overpotential (RT/F)·ln(I/i₀) is singular at zero current and is half the Butler–Volmer slope for α = 0.5 |
+| D-12 | fixed (author's decision) | The lithium-anode overpotential (RT/F)·ln(I/i₀) is singular at zero current and is half the Butler–Volmer slope for α = 0.5 |
 | D-13 | added (corrected mode) | The exchange current's c_s^α factors have an infinite slope at an empty or full particle, which makes Newton's method ill-posed |
 | D-10 | fixed (not ported) | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
 
@@ -89,7 +90,9 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
 
 ## D-9. Volume fractions add up to more than 1
 
-- `ε = 0.5` and `ε_AM = 0.8`. If `ε_AM` is meant as a fraction of the electrode volume, the solid and pore volumes sum to 1.3. It may instead be the active fraction *of the solid phase*. The equations use `ε_AM` directly in `a = 3ε_AM/R_p` and in the capacity. Needs the author's intent.
+- `ε = 0.5` and `ε_AM = 0.8`. If `ε_AM` is meant as a fraction of the electrode volume, the solid and pore volumes sum to 1.3. The equations use `ε_AM` directly in `a = 3ε_AM/R_p`, in the solid balance and in the capacity.
+- **Decision (author, 2026-09-27):** 0.8 is the active fraction of the solid phase. Corrected mode takes a new input, `f_AM` (default 0.8), and uses the active volume fraction f_AM·(1−ε) = 0.4. Faithful mode keeps `eps_AM` = 0.8 as a volume fraction, as the original did.
+- **Effect:** the active-material loading per area halves, from 6.91 to 3.46 mg/cm², and so do the interfacial area a (1.2 × 10⁵ → 6.0 × 10⁴ cm⁻¹) and the 1C current density (1.175 → 0.588 mA/cm²). Specific quantities (per gram of active material, electron equivalents, C-rate) keep their meaning.
 
 ## D-10. Out-of-bounds read in the output routine
 
@@ -126,7 +129,7 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
   | 1C | 12.2 | −64.2 mV | −128.7 mV | −64.5 mV |
   | 2C | 24.4 | −82.0 mV | −164.1 mV | −82.1 mV |
 
-  This is a modelling choice the author should confirm. The original factor 0.5 might have been intended, for example as an empirical adjustment.
+  **Decision (author, 2026-09-27):** use Butler–Volmer in corrected mode.
 
 ## D-13. Regularized exchange current near an empty or full particle (corrected mode)
 

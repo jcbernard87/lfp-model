@@ -24,7 +24,7 @@ def inventories(p, c):
     m = make_mesh(p)
     s, dx = m.s, m.dx
     salt = (p.eps_sep * c[1:s, 0] * dx[1:s]).sum() + (p.eps * c[s + 1:-1, 0] * dx[s + 1:-1]).sum()
-    solid = (p.eps_AM * c[s + 1:-1, 3] * dx[s + 1:-1]).sum()
+    solid = (p.vf_AM * c[s + 1:-1, 3] * dx[s + 1:-1]).sum()
     return salt, solid
 
 
