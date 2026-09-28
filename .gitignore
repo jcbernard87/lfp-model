@@ -10,6 +10,7 @@ runs/
 out/
 *.txt
 !requirements*.txt
+!CMakeLists.txt
 private/
 *.egg-info/
 
