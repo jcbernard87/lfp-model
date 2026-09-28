@@ -9,8 +9,15 @@ authors:
     family-names: Bernard
 version: 0.1.0
 date-released: 2026-09-28
-date-released: 2026-09-28
 license: BSD-3-Clause
+doi: 10.5281/zenodo.23004619
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23004619
+    description: Concept DOI (all versions; resolves to the latest)
+  - type: doi
+    value: 10.5281/zenodo.23004620
+    description: Version 0.1.0
 repository-code: "https://github.com/jcbernard87/lfp-model"
 url: "https://github.com/jcbernard87/lfp-model"
 abstract: >-

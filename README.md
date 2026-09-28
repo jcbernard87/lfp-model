@@ -1,5 +1,7 @@
 # lfp-model
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23004619.svg)](https://doi.org/10.5281/zenodo.23004619)
+
 A one-dimensional model of a LiFePO₄ half cell (lithium foil | separator | porous LiFePO₄ cathode | current collector). It is solved with [bandsolver](https://github.com/jcbernard87/bandsolver), an implementation of Newman's BAND method.
 
 The model uses dilute-solution transport of a binary electrolyte, electronic conduction in the cathode, Butler–Volmer insertion kinetics, and uniform-concentration particles. It is discretized with finite volumes and advanced by backward Euler, with Newton's method at every step. It runs constant-current, constant-voltage and rest protocols, including cycling.
@@ -94,4 +96,4 @@ Version 0.1.0 (2026-09-28). The original code's inactive crystal-scale (solid-di
 
 ## License and citation
 
-BSD 3-Clause; see [LICENSE](LICENSE). If you use this model, please cite [bandsolver](https://github.com/jcbernard87/bandsolver) and Newman's method: J. Newman, *Ind. Eng. Chem. Fundam.* 7, 514 (1968); J. Newman and K. E. Thomas-Alyea, *Electrochemical Systems*, 3rd ed., Appendix C.
+BSD 3-Clause; see [LICENSE](LICENSE). See [CITATION.cff](CITATION.cff); GitHub's "Cite this repository" button uses it. Archived on Zenodo: [doi:10.5281/zenodo.23004619](https://doi.org/10.5281/zenodo.23004619), which resolves to the latest version. Version 0.1.0 is [doi:10.5281/zenodo.23004620](https://doi.org/10.5281/zenodo.23004620). If you use this model, please also cite [bandsolver](https://github.com/jcbernard87/bandsolver) and Newman's method: J. Newman, *Ind. Eng. Chem. Fundam.* 7, 514 (1968); J. Newman and K. E. Thomas-Alyea, *Electrochemical Systems*, 3rd ed., Appendix C.
