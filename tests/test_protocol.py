@@ -38,7 +38,7 @@ def test_cycle_completes(cycle):
     p, r = cycle
     assert r.exit_reason == "end_of_protocol"
     a = r.array
-    step = a[:, -1]
+    step = a[:, 7]
     ends = [a[step == k][-1] for k in range(1, 6)]
     assert ends[0][1] == pytest.approx(2.5, abs=1e-4)          # discharge stops at Vmin
     assert ends[1][6] == 0.0                                   # rest carries no current
@@ -60,5 +60,5 @@ def test_cycle_conserves_lithium(cycle):
 def test_rest_relaxes_to_ocp(cycle):
     p, r = cycle
     c = r.final_state
-    u = kinetics.ocp(p, c[p.sep_node:-1, 3])
+    u = kinetics.ocp(p, c[p.sep_node:-1, 3], c[p.sep_node:-1, 0])
     np.testing.assert_allclose(c[p.sep_node:-1, 1] - c[p.sep_node:-1, 2], u, atol=2e-3)

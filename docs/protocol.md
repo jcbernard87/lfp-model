@@ -32,7 +32,7 @@ A step with no possible end (for example `cv` with neither `t` nor `Imin`) is re
 - **Time step.** Every step uses Δt = `t_max/n_steps` (1 s by default). A step's final time step is shortened so the step ends exactly at `t`, and a voltage end condition is located inside a time step by sub-stepping (the same mechanism as the corrected-mode cutoff; the crossing is resolved to within one sub-step).
 - **Constant current and rest** use the applied current directly (rest: I = 0).
 - **Constant voltage.** The current is unknown: each time step finds the current I for which the cell voltage equals `V`, by secant iteration on I around the full Newton solve (starting from the previous step's current; |V − V_set| ≤ 10⁻⁹ V).
-- **Cell voltage.** V = Φ₁(collector) − η_Li(I). The lithium counter electrode is treated as a symmetric Butler–Volmer interface, η_Li = (RT/(αF))·asinh(I/(2 i₀,Li)) with α = 0.5 and i₀,Li from the electrolyte concentration at x = 0. See deviation D-12: the original used (RT/F)·ln(I/i₀,Li), which is singular at zero current.
+- **Cell voltage.** The voltage between the current collector and the lithium foil, V = Φ₁(collector) − U_Li − η_Li(I), with the foil at 0 V (deviation D-15). U_Li = (RT/F)·ln(c(0)/c_Li,ref) is the foil's Nernst potential. The lithium counter electrode is treated as a symmetric Butler–Volmer interface, η_Li = (RT/(αF))·asinh(I/(2 i₀,Li)) with α = 0.5 and i₀,Li from the electrolyte concentration at x = 0. See deviation D-12: the original used (RT/F)·ln(I/i₀,Li), which is singular at zero current.
 
 ## Output
 
@@ -42,6 +42,9 @@ In corrected mode `Time_Voltage.txt` has the original seven columns plus:
 |---|---|---|
 | 8 | Current (mA/cm2) | applied current density, positive on discharge |
 | 9 | Step | 1-based index of the step in the expanded list (cycles × steps) |
+| 10 | Li_Nernst (mV) | Nernst potential of the lithium foil, U_Li = (RT/F)·ln(c(0)/c_Li,ref) (D-15) |
+
+Column 3 (Voltage) is the cell voltage against the lithium foil. Column 5 (Anode_Eta) is −η_Li, negative on discharge.
 
 Rows are written every `write_interval` seconds (default 18 s) and at the start and end of every step. The State column is `D` (I > 0), `C` (I < 0) or `R` (I = 0).
 

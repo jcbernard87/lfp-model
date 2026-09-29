@@ -188,7 +188,7 @@ class Assembler:
         dE[j0, P1, P1] = -(1.0 - self.eps_sep_face) * sig
         g[j0, P1] = self.phi1_row_sign * dE[j0, P1, P1] * gE[j0, P1]
         rj[j0, P2, P2] = 1.0
-        g[j0, P2] = 0.0 - c[j0, P2]
+        g[j0, P2] = 0.0 - c[j0, P2]      # gauge: phi2 = 0 at the foil face (see simulate.foil_shift)
 
         # ---- separator interior ----------------------------------------------------
         js = slice(1, s)

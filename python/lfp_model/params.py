@@ -22,7 +22,7 @@ def f32(x: float) -> float:
 @dataclass(frozen=True)
 class Params:
     # --- geometry and mesh ---
-    L_cath: float = 24.0e-4        # cathode thickness [cm]
+    L_cath_um: float = 24.0        # cathode thickness [um]; L_cath = L_cath_um * 1e-4 cm, as in the original
     L_sep: float = 25.0e-4         # separator thickness [cm]
     nj: int = 101                  # total nodes
     sep_node: int = 22             # separator/cathode interface node (1-based, as in the original)
@@ -103,6 +103,11 @@ class Params:
     @property
     def mol_vol(self) -> float:
         return self.rho / self.M
+
+    @property
+    def L_cath(self) -> float:
+        """Cathode thickness [cm], computed as the original did (24 * 1.0d-4 is not the same double as 24.0e-4)."""
+        return self.L_cath_um * 1.0e-4
 
     @property
     def vf_AM(self) -> float:

@@ -92,7 +92,7 @@ The public tests compute everything they need. They cover cross-language agreeme
 
 ## Status
 
-Version 0.1.0 (2026-09-28). The original code's inactive crystal-scale (solid-diffusion) submodel is not ported (deviation D-8).
+Version 0.2.0 (2026-09-28). The original code's inactive crystal-scale (solid-diffusion) submodel is not ported (deviation D-8).
 
 ## License and citation
 

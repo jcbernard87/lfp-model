@@ -20,7 +20,7 @@ program lfp
     integer, parameter :: IC = 1, IP1 = 2, IP2 = 3, ICS = 4
 
     ! ---------------- parameters (defaults = original research code) ----------------
-    real(dp) :: L_cath = 24.0e-4_dp, L_sep = 25.0e-4_dp
+    real(dp) :: L_cath_um = 24.0_dp, L_sep = 25.0e-4_dp     ! cathode thickness in um (L_cath = L_cath_um*1e-4 cm)
     integer  :: nj = 101, sep_node = 22
     real(dp) :: eps = 0.5_dp, eps_AM = 0.8_dp, eps_sep = 0.39_dp, tau_sep = 4.0_dp, bruggeman = -0.5_dp
     real(dp) :: f_AM = 0.8_dp          ! corrected mode: active fraction of the solid phase (D-9)
@@ -42,7 +42,7 @@ program lfp
     real(dp) :: write_interval = 18.0_dp               ! [s], corrected mode
     character(len=256) :: file = 'Time_Voltage.txt'
 
-    namelist /cell/ L_cath, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman
+    namelist /cell/ L_cath_um, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman
     namelist /electrolyte/ D, t_plus, c_bulk, z_plus, z_minus
     namelist /active/ sigma, M, rho, Q_th, R_p, k_rxn, alpha_a, alpha_c, k_Li, c_Li_ref
     namelist /constants/ R, T, F
@@ -56,6 +56,7 @@ program lfp
     real(dp) :: lit36, ocp_c(7), spec_a, tortuosity, i_spec, i_app, eps_sep_face, phi1_sign
     logical  :: full_current
     real(dp) :: dcat_s, dan_s, ucat_s, uan_s, dcat_c, dan_c, ucat_c, uan_c
+    real(dp) :: L_cath                   ! cathode thickness [cm], from L_cath_um as in the original (24 * 1.0d-4)
     real(dp) :: mass_area, i_1C, vf_AM   ! vf_AM: active volume fraction (eps_AM or f_AM*(1-eps))
     real(dp), parameter :: THETA_REG = 1.0e-6_dp       ! D-13 regularization threshold
 
@@ -567,6 +568,7 @@ contains
         else
             vf_AM = f_AM*(1.0_dp - eps)
         end if
+        L_cath = L_cath_um*1.0e-4_dp
         spec_a = 3*vf_AM/R_p
         tortuosity = eps**bruggeman
         i_spec = Q_th*C_rate
@@ -606,18 +608,20 @@ contains
         cs_max = (rho/M)*M*Q_th*1000.0_dp*lit36/F
     end function cs_max
 
-    real(dp) function ocp(cs)
-        real(dp), intent(in) :: cs
+    real(dp) function ocp(cs, cc)
+        !! Open-circuit potential [V]; corrected mode adds the Nernst term (RT/F) ln(c/c_bulk) (D-14).
+        real(dp), intent(in) :: cs, cc
         real(dp) :: th
         th = (cs/(rho/M))/(M*Q_th*1000.0_dp*lit36/F)
         ocp = ocp_c(1) + ocp_c(2)*atan(-(ocp_c(3)*th) + ocp_c(4)) - ocp_c(5)*atan(-(ocp_c(6)*th) + ocp_c(7))
+        if (.not. faithful) ocp = ocp + R*T/F*log(cc/c_bulk)
     end function ocp
 
     real(dp) function rate(cc, cs, p1, p2)
         !! Butler-Volmer current density per interfacial area [A/cm2], anodic positive.
         real(dp), intent(in) :: cc, cs, p1, p2
         real(dp) :: eta, i0
-        eta = p1 - p2 - ocp(cs)
+        eta = p1 - p2 - ocp(cs, cc)
         i0 = F*k_rxn*(cc**alpha_a)*((cs_max() - cs)**alpha_a)*(cs**alpha_c)
         if (faithful) i0 = r32(i0)     ! D-4: implicitly single precision in the original
         rate = i0*(exp(alpha_a*F*eta/(R*T)) - exp(-(alpha_c*F*eta/(R*T))))
@@ -682,7 +686,7 @@ contains
         rt = R*T
         aa = alpha_a*F/rt
         bb = alpha_c*F/rt
-        eta = p1 - p2 - ocp(cs)
+        eta = p1 - p2 - ocp(cs, cc)
         call power_reg(cs_max() - cs, alpha_a, THETA_REG*cs_max(), gv, dgv)
         call power_reg(cs, alpha_c, THETA_REG*cs_max(), gs, dgs)
         pre = F*k_rxn*(cc**alpha_a)
@@ -692,7 +696,7 @@ contains
         ec = exp(-bb*eta)
         i = i0*(ea - ec)
         di_deta = i0*(aa*ea + bb*ec)
-        di(IC) = alpha_a*i/cc
+        di(IC) = alpha_a*i/cc - di_deta*(rt/F)/cc      ! includes dU/dc of the Nernst term
         di(ICS) = di0*(ea - ec) - di_deta*ocp_slope(cs)
         di(IP1) = di_deta
         di(IP2) = -di_deta
@@ -957,7 +961,7 @@ contains
 
     ! =============================== output ===============================
     real(dp) function li_eta()
-        !! Overpotential of the lithium counter electrode (output only).
+        !! Signed overpotential of the lithium counter electrode (negative on discharge).
         real(dp) :: i0_li, alpha
         i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
         alpha = 0.5_dp
@@ -972,8 +976,21 @@ contains
         end if
     end function li_eta
 
+    real(dp) function li_nernst()
+        !! Corrected mode: Nernst potential of the lithium foil, (RT/F) ln(c/c_Li_ref) [V].
+        li_nernst = R*T/F*log(c(IC,1)/c_Li_ref)
+    end function li_nernst
+
     real(dp) function cell_voltage()
-        cell_voltage = c(IP1,nj) + li_eta()
+        !! Cell voltage against the lithium foil (0 V). The solver fixes the gauge with phi2 = 0 at the
+        !! foil face; the equations depend only on potential differences, so the foil-referenced
+        !! potentials are the solved ones minus U_Li + eta_Li (the foil metal on the solver's scale).
+        !! (Imposing the foil reference as the boundary condition makes the node-1 block singular at rest.)
+        if (faithful) then
+            cell_voltage = c(IP1,nj) + li_eta()
+        else
+            cell_voltage = c(IP1,nj) + li_eta() - li_nernst()
+        end if
     end function cell_voltage
 
     subroutine write_row_c(header, step)
@@ -984,17 +1001,17 @@ contains
         character(len=1) :: st
         if (header) then
             write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'State', 'Time', 'Voltage', 'Equivalence', 'Anode_Eta', &
-                'anode_exchange_c', 'Edge_c0', 'Current', 'Step'
+                'anode_exchange_c', 'Edge_c0', 'Current', 'Step', 'Li_Nernst'
             write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'CDR', 'hours', 'Volts', 'electron_equivs', 'mV', &
-                'mA/cm2', 'mol/cm3', 'mA/cm2', '#'
+                'mA/cm2', 'mol/cm3', 'mA/cm2', '#', 'mV'
         end if
         st = 'R'
         if (i_app > 0) st = 'D'
         if (i_app < 0) st = 'C'
         i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
         eta = li_eta()
-        write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15)') st, time/3600.0_dp, c(IP1,nj) + eta, &
-            mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c(IC,1), i_app*1.0e3_dp, step
+        write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15,1X,ES15.5)') st, time/3600.0_dp, cell_voltage(), &
+            mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c(IC,1), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp
     end subroutine write_row_c
 
     subroutine write_row(header)

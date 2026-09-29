@@ -8,7 +8,7 @@ These are the default values in the original research code. The source line (`L�
 
 | Name | Symbol | Value | Unit | Source | Notes |
 |---|---|---|---|---|---|
-| `xmax` | L_cath | 24 × 10⁻⁴ | cm | L124 | cathode thickness, 24 µm |
+| `xmax` | L_cath (input `L_cath_um`, µm) | 24 × 10⁻⁴ | cm | L124 | cathode thickness, 24 µm. The original computes `24 * 1.0d-4`, which differs from the literal 24.0 × 10⁻⁴ in the last bit, so the input is the thickness in µm and L_cath = L_cath_um × 10⁻⁴ cm |
 | `len_sep` | L_sep | 25 × 10⁻⁴ | cm | L109 | separator thickness, 25 µm (the source comment asks whether µm or cm) |
 | `NJ` | | 101 | | L35 | total nodes |
 | `SEP_NODE` | | 22 | | L108 | separator/cathode interface node |

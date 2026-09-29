@@ -18,6 +18,8 @@ The faithful mode (`mode = "faithful"`) reproduces the original program, includi
 | D-9 | the active-material input is `f_AM`, the active fraction of the **solid phase**; the active volume fraction is f_AM·(1−ε) = 0.4 by default |
 | D-12 | the Li counter electrode is a symmetric Butler–Volmer interface, η = (RT/(αF))·asinh(I/(2i₀)) |
 | D-13 | below θ = 10⁻⁶ (or 1 − θ < 10⁻⁶), c_s^α is replaced by a C¹ quadratic with a finite slope; results above that threshold are unchanged |
+| D-14 | the OCP includes the electrolyte Nernst term (RT/F)·ln(c/c_bulk) (v0.2.0) |
+| D-15 | potentials are referenced to the lithium foil (0 V), so the cell voltage includes the foil's Nernst term (RT/F)·ln(c(0)/c_ref) (v0.2.0) |
 
 Status values: **candidate** (suspected from reading the source), **confirmed** (demonstrated by a test or run), **fixed**, **kept** (reviewed and left as is, with the reason).
 
@@ -35,6 +37,8 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 | D-11 | fixed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
 | D-12 | fixed (author's decision) | The lithium-anode overpotential (RT/F)·ln(I/i₀) is singular at zero current and is half the Butler–Volmer slope for α = 0.5 |
 | D-13 | added (corrected mode) | The exchange current's c_s^α factors have an infinite slope at an empty or full particle, which makes Newton's method ill-posed |
+| D-14 | fixed (author's decision, v0.2.0) | The OCP has no electrolyte-concentration (Nernst) term, although Φ₂ is the electrostatic potential of the Nernst–Planck equations |
+| D-15 | fixed (author's decision, v0.2.0) | The reported voltage has no reference electrode: it leaves out the lithium foil's Nernst term |
 | D-10 | fixed (not ported) | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
 
 ## D-1. Li-foil face solid-potential row sign
@@ -139,3 +143,19 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
   - Rows are equilibrated before each solve (scaled by their largest entry in B).
   - Voltage cutoffs are located to within 0.1 mV by halving the sub-step.
   - A constant-voltage step treats a current the cell cannot sustain for the whole step as lying beyond the set voltage, and brackets the root.
+
+## D-14. Electrolyte Nernst term in the LFP open-circuit potential (v0.2.0)
+
+- **Where:** `OCP` (the arctangent fit of U(θ)) and its callers in the kinetics.
+- **What:** Φ₂ in this model is the electrostatic potential of the dilute-solution (Nernst–Planck) equations, not a potential measured with a reference electrode. With that choice the equilibrium potential of Li⁺ + e⁻ + FePO₄ ⇌ LiFePO₄ depends on the local salt concentration, U = U_fit(θ) + (RT/F)·ln(c/c_bulk). The original drops the concentration term, so the kinetics see no driving force from local depletion or build-up of Li⁺. The fit U_fit(θ) is kept as the value at c = c_bulk.
+- **Fix in corrected mode:** η = Φ₁ − Φ₂ − U_fit(θ) − (RT/F)·ln(c/c_bulk). The analytic Jacobian includes dU/dc = RT/(Fc). Faithful mode keeps the original.
+- **Effect** (corrected mode, 24 µm cathode): −0.0 mV (0.1C), −0.4 mV (1C) and −0.8 mV (2C) on the discharge plateau. Capacity to 2.5 V is unchanged to 10⁻⁴ equivalents.
+- **Decision (author, 2026-09-28):** include the term in corrected mode.
+
+## D-15. Voltage reference: the lithium foil at 0 V (v0.2.0)
+
+- **Where:** the reported voltage (`write_all_voltage`) and the node-1 Φ₂ row.
+- **What:** the original fixes Φ₂ = 0 at the foil face and reports Φ₁(collector) + η_Li. That is the voltage against a reference with the electrolyte's electrostatic potential at the foil face. The lithium foil's own equilibrium potential against that point, U_Li = (RT/F)·ln(c(0)/c_Li,ref), is left out (see also model.md §9). In an experiment the voltage is measured between the collector and the lithium foil.
+- **Fix in corrected mode:** potentials are referenced to the lithium foil metal (0 V). The foil sits at U_Li + η_Li on the solver's scale, so the cell voltage is V = Φ₁(collector) − U_Li − η_Li, and Φ₂ at the foil face is −(U_Li + η_Li). The solver keeps Φ₂ = 0 at the foil face as its gauge. The equations depend only on potential differences, so the foil-referenced potentials are the solved ones shifted by −(U_Li + η_Li), exactly (`simulate.foil_referenced`, tested in `test_potentials_are_gauge_invariant`). The foil potential cannot be imposed as the boundary condition itself: at rest the node-1 block becomes singular, because the foil then fixes the same electrochemical-potential combination as the cation-flux row. Constant-voltage steps hold this foil-referenced V. The output has a new column, Li_Nernst = U_Li in mV.
+- **Effect** (corrected mode): −0.1 mV (0.1C), −1.2 mV (1C) and −2.4 mV (2C), as salt builds up at the foil during discharge (the sign reverses on charge).
+- **Decision (author, 2026-09-28):** report the full cell voltage against the lithium foil.

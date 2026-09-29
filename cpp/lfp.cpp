@@ -178,7 +178,7 @@ bool solve(int n, int nj, const std::vector<double>& A, const std::vector<double
 double r32(double x) { return static_cast<double>(static_cast<float>(x)); }
 
 struct Params {
-    double L_cath = 24.0e-4, L_sep = 25.0e-4;
+    double L_cath_um = 24.0, L_sep = 25.0e-4;  // cathode thickness in um (L_cath = L_cath_um*1e-4 cm)
     int nj = 101, sep_node = 22;
     double eps = 0.5, eps_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5;
     double f_AM = 0.8;  // corrected mode: active fraction of the solid phase (D-9)
@@ -223,7 +223,7 @@ Params read_input(const std::string& path) {
     }
     Params p;
     std::map<std::string, double*> reals = {
-        {"l_cath", &p.L_cath}, {"l_sep", &p.L_sep}, {"eps", &p.eps}, {"eps_am", &p.eps_AM}, {"f_am", &p.f_AM},
+        {"l_cath_um", &p.L_cath_um}, {"l_sep", &p.L_sep}, {"eps", &p.eps}, {"eps_am", &p.eps_AM}, {"f_am", &p.f_AM},
         {"eps_sep", &p.eps_sep}, {"tau_sep", &p.tau_sep}, {"bruggeman", &p.bruggeman}, {"d", &p.D},
         {"t_plus", &p.t_plus}, {"c_bulk", &p.c_bulk}, {"z_plus", &p.z_plus}, {"z_minus", &p.z_minus},
         {"sigma", &p.sigma}, {"m", &p.M}, {"rho", &p.rho}, {"q_th", &p.Q_th}, {"r_p", &p.R_p},
@@ -334,7 +334,7 @@ using Mat = double[NV][NV];
 struct Model {
     Params p;
     bool faithful;
-    double lit36, ocp_c[7], spec_a, tortuosity, i_spec, eps_sep_face, phi1_sign, mass_area, i_1C;
+    double L_cath, lit36, ocp_c[7], spec_a, tortuosity, i_spec, eps_sep_face, phi1_sign, mass_area, i_1C;
     double vf_AM;  // active volume fraction: eps_AM (faithful) or f_AM*(1-eps) (corrected)
     double i_app;  // applied current density [A/cm2]; changes step by step in corrected mode
     bool full_current;
@@ -366,11 +366,12 @@ struct Model {
             full_current = true;
         }
         vf_AM = faithful ? p.eps_AM : p.f_AM * (1.0 - p.eps);
+        L_cath = p.L_cath_um * 1.0e-4;  // as in the original, 24 * 1.0d-4
         spec_a = 3 * vf_AM / p.R_p;
         tortuosity = std::pow(p.eps, p.bruggeman);
         i_spec = p.Q_th * p.C_rate;
-        i_app = i_spec * p.L_cath * vf_AM * p.rho;
-        mass_area = p.L_cath * vf_AM * p.rho;
+        i_app = i_spec * L_cath * vf_AM * p.rho;
+        mass_area = L_cath * vf_AM * p.rho;
         i_1C = p.Q_th * mass_area;
         const double t_an = 1.0 - p.t_plus;
         const double d_cat = p.D * (1.0 + (t_an / p.t_plus)) / (2.0 * t_an / p.t_plus);
@@ -383,7 +384,7 @@ struct Model {
         s = p.sep_node - 1;
         dx.assign(nj, 0.0); aW.assign(nj, 0.0); aE.assign(nj, 0.0); bW.assign(nj, 0.0); bE.assign(nj, 0.0);
         const double h_sep = p.L_sep / static_cast<double>(p.sep_node - 2);
-        const double h_cat = p.L_cath / static_cast<double>(nj - p.sep_node - 1);
+        const double h_cat = L_cath / static_cast<double>(nj - p.sep_node - 1);
         for (int j = 1; j < s; ++j) dx[j] = h_sep;
         for (int j = s + 1; j < nj - 1; ++j) dx[j] = h_cat;
         for (int j = 1; j < nj; ++j) { aW[j] = dx[j - 1] / (dx[j - 1] + dx[j]); bW[j] = 2.0 / (dx[j - 1] + dx[j]); }
@@ -392,12 +393,15 @@ struct Model {
 
     // ---- kinetics ----
     double cs_max() const { return (p.rho / p.M) * p.M * p.Q_th * 1000.0 * lit36 / p.F; }
-    double ocp(double cs) const {
+    // open-circuit potential; corrected mode adds the Nernst term (RT/F) ln(c/c_bulk) (D-14)
+    double ocp(double cs, double c) const {
         const double th = (cs / (p.rho / p.M)) / (p.M * p.Q_th * 1000.0 * lit36 / p.F);
-        return ocp_c[0] + ocp_c[1] * std::atan(-(ocp_c[2] * th) + ocp_c[3]) - ocp_c[4] * std::atan(-(ocp_c[5] * th) + ocp_c[6]);
+        double u = ocp_c[0] + ocp_c[1] * std::atan(-(ocp_c[2] * th) + ocp_c[3]) - ocp_c[4] * std::atan(-(ocp_c[5] * th) + ocp_c[6]);
+        if (!faithful) u += p.R * p.T / p.F * std::log(c / p.c_bulk);
+        return u;
     }
     double rate(double c, double cs, double p1, double p2) const {
-        const double eta = p1 - p2 - ocp(cs);
+        const double eta = p1 - p2 - ocp(cs, c);
         double i0 = p.F * p.k_rxn * std::pow(c, p.alpha_a) * std::pow(cs_max() - cs, p.alpha_a) * std::pow(cs, p.alpha_c);
         if (faithful) i0 = r32(i0);  // D-4
         return i0 * (std::exp(p.alpha_a * p.F * eta / (p.R * p.T)) - std::exp(-(p.alpha_c * p.F * eta / (p.R * p.T))));
@@ -424,7 +428,7 @@ struct Model {
     }
     void rate_derivs_exact(double c, double cs, double p1, double p2, double& i, double di[NV]) const {
         const double rt = p.R * p.T, aa = p.alpha_a * p.F / rt, bb = p.alpha_c * p.F / rt;
-        const double eta = p1 - p2 - ocp(cs);
+        const double eta = p1 - p2 - ocp(cs, c);
         double gv, dgv, gs, dgs;
         power_reg(cs_max() - cs, p.alpha_a, THETA_REG * cs_max(), gv, dgv);
         power_reg(cs, p.alpha_c, THETA_REG * cs_max(), gs, dgs);
@@ -433,7 +437,7 @@ struct Model {
         const double ea = std::exp(aa * eta), ec = std::exp(-bb * eta);
         i = i0 * (ea - ec);
         const double di_deta = i0 * (aa * ea + bb * ec);
-        di[IC] = p.alpha_a * i / c;
+        di[IC] = p.alpha_a * i / c - di_deta * (rt / p.F) / c;  // includes dU/dc of the Nernst term
         di[ICS] = di0 * (ea - ec) - di_deta * ocp_slope(cs);
         di[IP1] = di_deta;
         di[IP2] = -di_deta;
@@ -635,7 +639,8 @@ int main(int argc, char** argv) {
         auto header_lines = [&](bool extended) {
             std::vector<std::string> h1 = {"State", "Time", "Voltage", "Equivalence", "Anode_Eta", "anode_exchange_c", "Edge_c0"};
             std::vector<std::string> h2 = {"CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3"};
-            if (extended) { h1.push_back("Current"); h1.push_back("Step"); h2.push_back("mA/cm2"); h2.push_back("#"); }
+            if (extended) { h1.push_back("Current"); h1.push_back("Step"); h1.push_back("Li_Nernst");
+                          h2.push_back("mA/cm2"); h2.push_back("#"); h2.push_back("mV"); }
             for (auto* h : {&h1, &h2}) {
                 std::string l = fit((*h)[0], 5) + " " + fit((*h)[1], 12) + " " + fit((*h)[2], 12);
                 for (std::size_t k = 3; k < h->size(); ++k) l += " " + fit((*h)[k], 15);
@@ -651,7 +656,13 @@ int main(int argc, char** argv) {
             if (state == 'D') return -(0.5 * std::log(m.i_app / i0_li())) / (alpha * p.F / (p.R * p.T));
             return 0.0;
         };
-        auto cell_voltage = [&]() { return c[(nj - 1) * NV + IP1] + li_eta('D'); };
+        // corrected mode: Nernst potential of the lithium foil, (RT/F) ln(c/c_Li_ref)
+        auto li_nernst = [&]() { return p.R * p.T / p.F * std::log(c[IC] / p.c_Li_ref); };
+        // Corrected mode: cell voltage against the lithium foil (0 V). The solver fixes the gauge with
+        // phi2 = 0 at the foil face; the equations depend only on potential differences, so the
+        // foil-referenced potentials are the solved ones minus U_Li + eta_Li. (Imposing the foil
+        // reference as the boundary condition makes the first block singular at rest.)
+        auto cell_voltage = [&]() { return c[(nj - 1) * NV + IP1] + li_eta('D') - li_nernst(); };
 
         if (m.faithful) {
             // ---------------- the original program's constant-current discharge ----------------
@@ -696,10 +707,10 @@ int main(int argc, char** argv) {
                 if (header) header_lines(true);
                 const char st = m.i_app > 0 ? 'D' : (m.i_app < 0 ? 'C' : 'R');
                 const double eta = li_eta(st);
-                std::fprintf(out, "%5c %s %s %s %s %s %s %s %15d\n", st, fixed12(t / 3600.0).c_str(),
-                             fixed12(c[(nj - 1) * NV + IP1] + eta).c_str(), sci15(mAhg * p.M * 3.6 / p.F).c_str(),
+                std::fprintf(out, "%5c %s %s %s %s %s %s %s %15d %s\n", st, fixed12(t / 3600.0).c_str(),
+                             fixed12(cell_voltage()).c_str(), sci15(mAhg * p.M * 3.6 / p.F).c_str(),
                              sci15(eta * 1.0e3).c_str(), sci15(i0_li() * 1.0e3).c_str(), sci15(c[IC]).c_str(),
-                             sci15(m.i_app * 1.0e3).c_str(), step);
+                             sci15(m.i_app * 1.0e3).c_str(), step, sci15(li_nernst() * 1.0e3).c_str());
             };
             // scale every equation by the largest entry of its row in B (the solution is unchanged)
             auto equilibrate = [&]() {

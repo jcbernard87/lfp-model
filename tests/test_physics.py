@@ -157,3 +157,38 @@ def test_corrected_ends_at_cutoff(C_rate):
     v = r.array[:, 1]
     assert v[-1] <= 2.5 and v[-2] > 2.5
     assert 0.79 < r.array[-1, 2] < 0.7977     # electron equivalents: nearly full use of the capacity
+
+
+# ------------------------------------------------------------------ reference electrode and OCP
+
+def test_ocp_nernst_term_corrected_only():
+    """Corrected mode adds (RT/F) ln(c/c_bulk) to the LFP OCP; faithful mode keeps the fit alone."""
+    cs = np.array([0.3, 0.5, 0.7]) * kinetics.cs_max(corrected())
+    for p in (corrected(), Params.faithful()):
+        u0 = kinetics.ocp(p, cs)
+        u2 = kinetics.ocp(p, cs, 2.0 * p.c_bulk)
+        shift = p.R * p.T / p.F * np.log(2.0) if p.mode == "corrected" else 0.0
+        np.testing.assert_allclose(u2 - u0, shift, rtol=1e-12, atol=0.0)
+
+
+def test_potentials_are_gauge_invariant(mid_discharge):
+    """The residual depends only on potential differences, so the foil reference is an exact shift."""
+    from lfp_model.simulate import foil_referenced
+    p, c_prev, c = mid_discharge
+    rng = np.random.default_rng(1)
+    x = c * (1.0 + 1.0e-3 * rng.standard_normal(c.shape))    # off the solution, so the residual is not round-off
+    r0 = residual(p, x, c_prev, p.dt)
+    r1 = residual(p, foil_referenced(p, x, p.i_app), c_prev, p.dt)
+    r0[0, 2] = r1[0, 2] = 0.0                                 # the gauge row phi2(foil face) = 0 itself
+    np.testing.assert_allclose(r1, r0, rtol=0, atol=1e-9 * np.abs(r0).max())
+
+
+def test_cell_voltage_against_foil(mid_discharge):
+    """V = phi1(collector) - (U_Li + eta_Li): phi2 at the foil face is -(U_Li + eta_Li) on the foil scale."""
+    from lfp_model.simulate import cell_voltage, foil_referenced
+    p, _, c = mid_discharge
+    u_li, eta_li = kinetics.li_foil(p, c[0, 0], p.i_app)
+    ref = foil_referenced(p, c, p.i_app)
+    assert ref[0, 2] == pytest.approx(-(u_li + eta_li), abs=1e-15)
+    assert cell_voltage(p, c, p.i_app) == pytest.approx(ref[-1, 1], abs=1e-15)
+    assert eta_li > 0 and c[0, 0] > p.c_bulk and u_li > 0     # discharge: salt builds up at the foil

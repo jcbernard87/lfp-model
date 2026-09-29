@@ -136,7 +136,7 @@ A crystal (particle) scale with two unknowns exists in the source but is **inact
 | 6 | anode_exchange_c (mA/cm²) | `i₀,Li` |
 | 7 | Edge_c0 (mol/cm³) | `c` at x = 0 |
 
-- The voltage excludes the concentration (Nernst) term of the lithium electrode. It is computed as `anode_potential` but only printed to the terminal.
+- The voltage excludes the concentration (Nernst) term of the lithium electrode. It is computed as `anode_potential` but only printed to the terminal. Corrected mode reports the voltage against the lithium foil, including this term **[D-15]**.
 - **Write schedule.** One row at `it = 1` (t = 0, before the first solve); then whenever `(t − t_last)/3600 ≥ t_max/N_steps/200` (= 18 s); then one final row at the exit.
   - `t_last = t − Δt` is stored in an implicitly **integer** variable, so it is truncated. **[D-4]** With Δt = 1 s, rows are written every 17 s.
   - Rows are written *before* the step, so each row reports the state at time `t` with `mAh/g` already incremented to `t`.

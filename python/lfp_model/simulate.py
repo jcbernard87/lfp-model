@@ -22,8 +22,8 @@ from .protocol import Step, expand
 
 HEADER = ("State", "Time", "Voltage", "Equivalence", "Anode_Eta", "anode_exchange_c", "Edge_c0")
 UNITS = ("CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3")
-HEADER_EXTRA = ("Current", "Step")          # corrected mode only
-UNITS_EXTRA = ("mA/cm2", "#")
+HEADER_EXTRA = ("Current", "Step", "Li_Nernst")   # corrected mode only
+UNITS_EXTRA = ("mA/cm2", "#", "mV")
 
 
 def _fmt_fixed(v: float) -> str:
@@ -259,23 +259,44 @@ def _run_faithful(p: Params, *, backend: str, pivot: str, max_steps: Optional[in
 def li_eta(p: Params, c_edge: float, I: float) -> float:
     """Signed overpotential of the lithium counter electrode (symmetric Butler-Volmer, fixes D-12).
 
-    Negative on discharge (I > 0), so that the cell voltage is phi1(collector) + li_eta.
+    Reported as a negative number on discharge (I > 0).
     """
-    alpha = 0.5
-    i0 = float(kinetics.li_exchange_current(p, c_edge))
-    return -(p.R * p.T / (alpha * p.F)) * math.asinh(I / (2.0 * i0))
+    return -float(kinetics.li_foil(p, float(c_edge), I)[1])
+
+
+def foil_shift(p: Params, c: np.ndarray, I: float) -> float:
+    """Potential of the lithium foil metal on the solver's scale [V] (corrected mode).
+
+    The equations depend only on potential differences, so the solver fixes the gauge with
+    phi2 = 0 at the foil face. The foil metal then sits at U_Li + eta_Li; subtracting it from
+    phi1 and phi2 gives potentials referenced to the foil (0 V), exactly. Imposing the foil
+    reference as a boundary condition instead makes the node-0 block singular at rest, because
+    the foil then fixes the same electrochemical-potential combination as the flux row.
+    """
+    u_li, eta_li = kinetics.li_foil(p, float(c[0, C]), I)
+    return float(u_li + eta_li)
+
+
+def foil_referenced(p: Params, c: np.ndarray, I: float) -> np.ndarray:
+    """State with phi1 and phi2 referenced to the lithium foil (0 V)."""
+    out = c.copy()
+    s = foil_shift(p, c, I)
+    out[:, P1] -= s
+    out[:, P2] -= s
+    return out
 
 
 def cell_voltage(p: Params, c: np.ndarray, I: float) -> float:
-    return float(c[-1, P1]) + li_eta(p, float(c[0, C]), I)
+    """Cell voltage against the lithium foil: phi1 at the current collector, foil-referenced."""
+    return float(c[-1, P1]) - foil_shift(p, c, I)
 
 
 def _row(p: Params, t: float, c: np.ndarray, mAhg: float, I: float, step: int):
     state = "D" if I > 0 else ("C" if I < 0 else "R")
-    eta = li_eta(p, float(c[0, C]), I)
+    u_li, eta_li = kinetics.li_foil(p, float(c[0, C]), I)
     i0 = float(kinetics.li_exchange_current(p, c[0, C]))
-    return (state, t / 3600.0, float(c[-1, P1]) + eta, mAhg * p.M * 3.6 / p.F, eta * 1.0e3, i0 * 1.0e3,
-            float(c[0, C]), I * 1.0e3, step)
+    return (state, t / 3600.0, cell_voltage(p, c, I), mAhg * p.M * 3.6 / p.F, -float(eta_li) * 1.0e3,
+            i0 * 1.0e3, float(c[0, C]), I * 1.0e3, step, float(u_li) * 1.0e3)
 
 
 CV_TOL = 1.0e-9      # [V]

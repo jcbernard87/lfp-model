@@ -4,7 +4,7 @@
 ! To reproduce the original research code exactly, use input/examples/faithful.nml.
 
 &cell
-  L_cath = 24.0d-4, L_sep = 25.0d-4, nj = 101, sep_node = 22
+  L_cath_um = 24, L_sep = 25.0d-4, nj = 101, sep_node = 22
   eps = 0.5, f_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5
   ! f_AM: active-material fraction of the solid phase (active volume fraction = f_AM*(1-eps))
 /

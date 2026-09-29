@@ -20,7 +20,7 @@ from dataclasses import fields
 from .params import Params, f32
 
 GROUPS = {
-    "cell": ["L_cath", "L_sep", "nj", "sep_node", "eps", "eps_AM", "f_AM", "eps_sep", "tau_sep", "bruggeman"],
+    "cell": ["L_cath_um", "L_sep", "nj", "sep_node", "eps", "eps_AM", "f_AM", "eps_sep", "tau_sep", "bruggeman"],
     "electrolyte": ["D", "t_plus", "c_bulk", "z_plus", "z_minus"],
     "active": ["sigma", "M", "rho", "Q_th", "R_p", "k_rxn", "alpha_a", "alpha_c", "k_Li", "c_Li_ref"],
     "constants": ["R", "T", "F"],

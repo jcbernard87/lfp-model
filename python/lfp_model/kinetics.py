@@ -35,10 +35,20 @@ def theta(p: Params, cs):
     return x / x_max
 
 
-def ocp(p: Params, cs):
+def ocp(p: Params, cs, c=None):
+    """Open-circuit potential [V].
+
+    Corrected mode adds the Nernst term (RT/F) ln(c/c_bulk) of the electrolyte concentration,
+    which belongs in U with the electrostatic phi2 of the Nernst-Planck equations (deviation
+    D-14). Faithful mode, and calls without c, return the original arctangent fit alone.
+    """
     a0, a1, b1, c1, a2, b2, c2 = _ocp_coeffs(p)
     th = theta(p, cs)
-    return a0 + a1 * np.arctan(-(b1 * th) + c1) - a2 * np.arctan(-(b2 * th) + c2)
+    u = a0 + a1 * np.arctan(-(b1 * th) + c1) - a2 * np.arctan(-(b2 * th) + c2)
+    if p.mode != "faithful" and c is not None:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            u = u + p.R * p.T / p.F * np.log(c / p.c_bulk)
+    return u
 
 
 THETA_REG = 1.0e-6   # corrected mode: below this lithiation (or vacancy) fraction, x^alpha is regularized
@@ -80,7 +90,7 @@ def exchange_current_and_slope(p: Params, c, cs):
 
 def reaction_rate(p: Params, c, cs, phi1, phi2):
     """Butler-Volmer current density per unit interfacial area [A/cm2]; anodic positive."""
-    eta = phi1 - phi2 - ocp(p, cs)
+    eta = phi1 - phi2 - ocp(p, cs, c)
     i0 = exchange_current(p, c, cs)
     rt = p.R * p.T
     with np.errstate(invalid="ignore", over="ignore"):
@@ -121,17 +131,30 @@ def reaction_derivatives_analytic(p: Params, c, cs, phi1, phi2):
     """Rate and exact derivatives (d/dc, d/dcs, d/dphi1, d/dphi2); used in corrected mode (fixes D-6)."""
     rt = p.R * p.T
     A_, B_ = p.alpha_a * p.F / rt, p.alpha_c * p.F / rt
-    eta = phi1 - phi2 - ocp(p, cs)
+    eta = phi1 - phi2 - ocp(p, cs, c)
     i0, di0_dcs = exchange_current_and_slope(p, c, cs)
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         ea, ec = np.exp(A_ * eta), np.exp(-B_ * eta)
         i = i0 * (ea - ec)
         di_deta = i0 * (A_ * ea + B_ * ec)
-        d_c = p.alpha_a * i / c
+        d_c = p.alpha_a * i / c - di_deta * (rt / p.F) / c        # includes dU/dc of the Nernst term
         d_cs = di0_dcs * (ea - ec) - di_deta * ocp_slope(p, cs)
     return i, d_c, d_cs, di_deta, -di_deta
 
 
 def li_exchange_current(p: Params, c):
-    """Exchange current density of the lithium counter electrode [A/cm2] (output only)."""
+    """Exchange current density of the lithium counter electrode [A/cm2]."""
     return p.F * p.k_Li * (c ** 0.5) * (p.c_Li_ref ** 0.5)
+
+
+def li_foil(p: Params, c, I):
+    """The lithium foil's Nernst potential U_Li and overpotential eta_Li [V] (corrected mode).
+
+    With the foil metal as the 0 V reference, phi2 at the foil is -(U_Li + eta_Li), where
+    U_Li = (RT/F) ln(c/c_Li_ref) and eta_Li = (RT/(alpha F)) asinh(I/(2 i0)) (symmetric
+    Butler-Volmer, alpha = 0.5; I > 0 on discharge, when the foil is oxidized).
+    """
+    alpha = 0.5
+    rtf = p.R * p.T / p.F
+    i0 = li_exchange_current(p, c)
+    return rtf * np.log(c / p.c_Li_ref), rtf / alpha * np.arcsinh(I / (2.0 * i0))

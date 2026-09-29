@@ -1,6 +1,6 @@
 # Validation
 
-All numbers below were measured before deviation D-9 was applied to corrected mode, except the test results, which are re-run on every change. D-9 halves the active volume fraction, so per-area quantities (currents, a) change, but none of the checks depend on it. All numbers were measured on macOS arm64 (gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5, bandsolver 0.1.1) on 2026-09-27. The public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
+All numbers below were measured before deviation D-9 was applied to corrected mode, except the test results, which are re-run on every change. D-9 halves the active volume fraction, so per-area quantities (currents, a) change, but none of the checks depend on it. All numbers were measured on macOS arm64 (gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5, bandsolver 0.1.1) on 2026-09-27; the D-14/D-15 checks and effects on 2026-09-28. The public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
 
 ## 1. Reproduction of the original research code (private)
 
@@ -24,7 +24,7 @@ Byte-identical output required reproducing the original's single-precision liter
 | Fortran vs Python, 2C and 0.5C | corrected | agree to rtol 1e-5 (rounding of the printed values) |
 | C++ vs Python, 2C and 0.5C | corrected | agree to rtol 1e-5 |
 | C++ vs Fortran, 2C and 0.5C | corrected | identical files |
-| Full protocol cycle: Fortran, C++, Python | corrected | Fortran and C++ files identical; Python agrees to rtol 1e-5 |
+| Full protocol cycle: Fortran, C++, Python | corrected | Fortran and C++ files identical except the Li_Nernst column during the final rest, where c(0) → c_ref and the value is round-off (about 10⁻¹⁴ mV); Python agrees to rtol 1e-5 |
 
 ## 3. Physics and numerics (public, `tests/test_physics.py`)
 
@@ -36,6 +36,8 @@ Byte-identical output required reproducing the original's single-precision liter
 | Lithium into the solid / (I t/F) | 1 − 1 × 10⁻¹⁶ | 1 − 3 × 10⁻¹⁵ |
 | Ionic current across the separator | = I to 10⁻⁹ | −0.39 I (D-11) |
 | Rest at equilibrium (no current, Φ₁ = U) | no change to 10⁻¹² | not tested |
+| OCP Nernst term (D-14) | U(θ, 2c_bulk) − U(θ, c_bulk) = (RT/F)·ln 2 to 10⁻¹² relative | no term |
+| Foil reference (D-15): residual unchanged when Φ₁ and Φ₂ are shifted by −(U_Li + η_Li) (perturbed state); V = Φ₁(collector) on the foil scale | to 10⁻⁹ of the largest residual entry | not applicable |
 | Time-step convergence (Li-face concentration at t = 8 s, 2C, Δt = 1 … 0.0625 s) | orders 0.96, 0.98, 0.99 (backward Euler: 1) | |
 | Mesh convergence (cell voltage at 900 s, 2C, 26 … 401 nodes) | orders 2.11, 2.05, 2.02 | |
 | End of discharge | `cutoff_low`, located within 0.1 mV of 2.5 V; 0.7964–0.7973 electron equivalents (2C, 1C) | ends on a NaN (D-3) |
@@ -43,7 +45,7 @@ Byte-identical output required reproducing the original's single-precision liter
 
 ## 4. Effect of each fix on results
 
-Measured by reverting one fix at a time in corrected mode, for a 1C discharge. ΔV is the change in cell voltage over the first 0.9 h, relative to corrected mode. These were measured before D-12 was introduced. D-12 changes only the reported counter-electrode overpotential, which is identical in every row, so the relative effects stand. D-12 itself shifts the cell voltage by −24.5 mV (0.1C) to −82 mV (2C); see [deviations.md](deviations.md#d-12-lithium-counter-electrode-overpotential).
+Measured by reverting one fix at a time in corrected mode, for a 1C discharge. ΔV is the change in cell voltage over the first 0.9 h, relative to corrected mode. These were measured before D-12 was introduced. D-12 changes only the reported counter-electrode overpotential, which is identical in every row, so the relative effects stand. D-12 itself shifts the cell voltage by −24.5 mV (0.1C) to −82 mV (2C); see [deviations.md](deviations.md#d-12-lithium-counter-electrode-overpotential). D-14 (OCP Nernst term) and D-15 (voltage against the lithium foil), added in v0.2.0, together shift a 1C discharge by −1.6 mV and a 2C discharge by −3.2 mV; see deviations.md for each.
 
 | Reverted | Mean ΔV | Max \|ΔV\| | Notes |
 |---|---|---|---|
