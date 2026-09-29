@@ -43,7 +43,8 @@ program lfp
     character(len=256) :: file = 'Time_Voltage.txt'
 
     namelist /cell/ L_cath_um, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman
-    namelist /electrolyte/ D, t_plus, c_bulk, z_plus, z_minus
+    real(dp) :: kappa_bg = 1.0e-8_dp                   ! corrected: background (solvent) ionic conductivity [S/cm]
+    namelist /electrolyte/ D, t_plus, c_bulk, z_plus, z_minus, kappa_bg
     namelist /active/ sigma, M, rho, Q_th, R_p, k_rxn, alpha_a, alpha_c, k_Li, c_Li_ref
     namelist /constants/ R, T, F
     namelist /operation/ C_rate, phi1_init, phi2_init, cs_init, t_max, n_steps, V_min, V_max
@@ -56,6 +57,7 @@ program lfp
     real(dp) :: lit36, ocp_c(7), spec_a, tortuosity, i_spec, i_app, eps_sep_face, phi1_sign
     logical  :: full_current
     real(dp) :: dcat_s, dan_s, ucat_s, uan_s, dcat_c, dan_c, ucat_c, uan_c
+    real(dp) :: dplus, dminus                        ! ion diffusivities (corrected mode)
     real(dp) :: L_cath                   ! cathode thickness [cm], from L_cath_um as in the original (24 * 1.0d-4)
     real(dp) :: mass_area, i_1C, vf_AM   ! vf_AM: active volume fraction (eps_AM or f_AM*(1-eps))
     real(dp), parameter :: THETA_REG = 1.0e-6_dp       ! D-13 regularization threshold
@@ -91,6 +93,10 @@ program lfp
     c(IP1,:) = phi1_init
     c(IP2,:) = phi2_init
     c(ICS,:) = cs_init
+    if (.not. faithful) then                   ! corrected mode: u = ln(c/c_bulk) and the particles' log-odds
+        c(IC,:) = 0.0_dp
+        c(ICS,:) = log((cs_init/cs_max())/(1.0_dp - cs_init/cs_max()))
+    end if
     dc = 0.0_dp
     nsolve = 0
     time = 0.0_dp
@@ -353,7 +359,7 @@ contains
                 i_app = I
                 if (.not. ok) then
                     call write_row_c(.false., k)
-                    exit_reason = 'solver_fail'
+                    exit_reason = limit_reason()
                     nsolve = nsteps_done
                     return
                 end if
@@ -582,6 +588,7 @@ contains
         d_an = d_cat*t_an/t_plus
         u_cat = d_cat/(R*T)
         u_an = d_an/(R*T)
+        dplus = d_cat; dminus = d_an
         dcat_s = d_cat/tau_sep;    dan_s = d_an/tau_sep;    ucat_s = u_cat/tau_sep;    uan_s = u_an/tau_sep
         dcat_c = d_cat/tortuosity; dan_c = d_an/tortuosity; ucat_c = u_cat/tortuosity; uan_c = u_an/tortuosity
 
@@ -703,38 +710,204 @@ contains
     end subroutine rate_derivs_exact
 
     ! =============================== corrected-mode time step ===============================
-    subroutine time_terms(dt, Tt)
-        !! Storage coefficients: the time-derivative part of each row is Tt*(c - c_old).
-        real(dp), intent(in) :: dt
-        real(dp), intent(out) :: Tt(NV,nj)
-        Tt = 0.0_dp
-        Tt(ICS,1) = -(vf_AM/dt)
-        Tt(IC,2:s-1) = -(eps_sep/dt*dx(2:s-1))
-        Tt(ICS,2:s-1) = -((1.0_dp - eps_sep)/dt)
-        Tt(IC,s+1:nj-1) = -((eps/dt)*dx(s+1:nj-1))
-        Tt(ICS,s:nj) = -(vf_AM/dt)
-    end subroutine time_terms
+    ! Corrected mode is solved in log variables (docs/model.md section 10): column IC holds
+    ! u = ln(c/c_bulk) and column ICS the particles' log-odds s = ln(theta/(1-theta)), so c > 0 and
+    ! 0 < theta < 1 by construction; ion fluxes use exponential fitting (Scharfetter-Gummel);
+    ! kappa_bg keeps phi2 defined where the salt is exhausted. Residuals R(x) = 0, G = -R.
 
-    real(dp) function bounded_step(dcc)
-        !! Largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound)
-        !! and changing no potential by more than 0.1 V (Butler-Volmer exponentials make Newton overshoot).
-        real(dp), intent(in) :: dcc(NV,nj)
-        real(dp), parameter :: keep = 0.9_dp
-        real(dp) :: csm
-        integer :: j
-        real(dp), parameter :: max_dphi = 0.1_dp   ! largest potential change per iteration [V]
-        real(dp) :: dphi
-        csm = cs_max()
-        bounded_step = 1.0_dp
-        dphi = maxval(abs(dcc(IP1:IP2,:)))
-        if (dphi > max_dphi) bounded_step = max_dphi/dphi
-        do j = 1, nj
-            if (dcc(IC,j) < 0) bounded_step = min(bounded_step, keep*(c(IC,j) - 0.0_dp)/(-dcc(IC,j)))
-            if (dcc(ICS,j) < 0) bounded_step = min(bounded_step, keep*(c(ICS,j) - 0.0_dp)/(-dcc(ICS,j)))
-            if (dcc(ICS,j) > 0) bounded_step = min(bounded_step, keep*(csm - c(ICS,j))/dcc(ICS,j))
+    pure real(dp) function bern(x)
+        !! B(x) = x/(e^x - 1), with its series near 0.
+        real(dp), intent(in) :: x
+        if (abs(x) < 1.0e-3_dp) then
+            bern = 1.0_dp - x/2.0_dp + x*x/12.0_dp
+        else if (x > 700.0_dp) then
+            bern = x*exp(-x)
+        else
+            bern = x/(exp(x) - 1.0_dp)
+        end if
+    end function bern
+
+    pure real(dp) function bern_p(x)
+        !! B'(x) = B(x) (1 - B(-x)) / x, with its series near 0.
+        real(dp), intent(in) :: x
+        if (abs(x) < 1.0e-3_dp) then
+            bern_p = -0.5_dp + x/6.0_dp - x**3/180.0_dp
+        else
+            bern_p = bern(x)*(1.0_dp - bern(-x))/x
+        end if
+    end function bern_p
+
+    pure real(dp) function softplus(x)
+        real(dp), intent(in) :: x
+        softplus = max(x, 0.0_dp) + log(1.0_dp + exp(-abs(x)))
+    end function softplus
+
+    pure real(dp) function sigm(x)
+        !! 1/(1 + e^-x) without cancellation for either sign (use sigm(-x) for 1 - sigm(x)).
+        real(dp), intent(in) :: x
+        real(dp) :: e
+        e = exp(-abs(x))
+        if (x >= 0.0_dp) then
+            sigm = 1.0_dp/(1.0_dp + e)
+        else
+            sigm = e/(1.0_dp + e)
+        end if
+    end function sigm
+
+    subroutine lrate(x, i, di)
+        !! Butler-Volmer in the log variables: i_n and d i_n / d(u, phi1, phi2, s). U is the arctangent
+        !! fit, plus the thermodynamic tails (D-16) and the electrolyte Nernst term (D-14).
+        real(dp), intent(in) :: x(NV)
+        real(dp), intent(out) :: i, di(NV)
+        real(dp), parameter :: theta_tail = 1.0e-4_dp
+        real(dp) :: rtf, ff, th, om, z1, z2, fit, dfit, se, tail, dtail, dU_ds, ln_i0, eta, ea, ec, di_deta
+        rtf = R*T/F
+        ff = 1.0_dp/rtf
+        th = sigm(x(ICS)); om = sigm(-x(ICS))     ! theta and 1 - theta
+        z1 = -(ocp_c(3)*th) + ocp_c(4); z2 = -(ocp_c(6)*th) + ocp_c(7)
+        fit = ocp_c(1) + ocp_c(2)*atan(z1) - ocp_c(5)*atan(z2)
+        dfit = ocp_c(2)*(-ocp_c(3))/(1.0_dp + z1*z1) - ocp_c(5)*(-ocp_c(6))/(1.0_dp + z2*z2)
+        se = log(theta_tail/(1.0_dp - theta_tail))
+        tail = rtf*(softplus(se - x(ICS)) - softplus(x(ICS) + se))
+        dtail = -rtf*(sigm(se - x(ICS)) + sigm(x(ICS) + se))
+        dU_ds = dfit*th*om + dtail
+        ln_i0 = log(F*k_rxn*c_bulk**alpha_a*cs_max()**(alpha_a + alpha_c)) + alpha_a*x(IC) &
+                - alpha_a*softplus(x(ICS)) - alpha_c*softplus(-x(ICS))
+        eta = x(IP1) - x(IP2) - (fit + tail + rtf*x(IC))
+        ea = exp(ln_i0 + alpha_a*ff*eta)
+        ec = exp(ln_i0 - alpha_c*ff*eta)
+        i = ea - ec
+        di_deta = alpha_a*ff*ea + alpha_c*ff*ec
+        di(IC) = i*alpha_a - di_deta*rtf
+        di(IP1) = di_deta
+        di(IP2) = -di_deta
+        di(ICS) = i*(-alpha_a*th + alpha_c*om) - di_deta*dU_ds
+    end subroutine lrate
+
+    subroutine sg_face(xa, xb, gf, gsf, Fv, dFa, dFb)
+        !! Face fluxes (N+, i1, i2) from state xa to state xb and their derivatives (Scharfetter-Gummel).
+        !! gf = eps/(tau h), gsf = (1-eps) sigma/h.
+        real(dp), intent(in) :: xa(NV), xb(NV), gf, gsf
+        real(dp), intent(out) :: Fv(3), dFa(3,NV), dFb(3,NV)
+        real(dp) :: ff, ca, cb, d, Bp, Bm, dBp, dBm, Np, Nm, dNp_dd, dNm_dd, kb
+        ff = F/(R*T)
+        ca = c_bulk*exp(xa(IC)); cb = c_bulk*exp(xb(IC))
+        d = ff*(xb(IP2) - xa(IP2))
+        Bp = bern(d); Bm = bern(-d); dBp = bern_p(d); dBm = bern_p(-d)
+        Np = gf*dplus*(Bp*ca - Bm*cb)
+        Nm = gf*dminus*(Bm*ca - Bp*cb)
+        dNp_dd = gf*dplus*(dBp*ca + dBm*cb)
+        dNm_dd = gf*dminus*(-dBm*ca - dBp*cb)
+        kb = gf*kappa_bg
+        Fv(1) = Np
+        Fv(2) = -gsf*(xb(IP1) - xa(IP1))
+        Fv(3) = F*(Np - Nm) - kb*(xb(IP2) - xa(IP2))
+        dFa = 0.0_dp; dFb = 0.0_dp
+        dFa(1,IC) = gf*dplus*Bp*ca
+        dFb(1,IC) = -gf*dplus*Bm*cb
+        dFa(1,IP2) = -ff*dNp_dd
+        dFb(1,IP2) = ff*dNp_dd
+        dFa(2,IP1) = gsf
+        dFb(2,IP1) = -gsf
+        dFa(3,IC) = F*(dFa(1,IC) - gf*dminus*Bm*ca)
+        dFb(3,IC) = F*(dFb(1,IC) + gf*dminus*Bp*cb)
+        dFa(3,IP2) = -F*ff*(dNp_dd - dNm_dd) + kb
+        dFb(3,IP2) = F*ff*(dNp_dd - dNm_dd) - kb
+    end subroutine sg_face
+
+    subroutine lel_assemble(x, xold, dt, Ia)
+        !! Residual and blocks (A, B, Dm, G = -R) in the log variables, with the particles at nodes s..nj.
+        real(dp), intent(in) :: x(NV,nj), xold(NV,nj), dt, Ia
+        real(dp) :: Fv(3,nj-1), dFa(3,NV,nj-1), dFb(3,NV,nj-1), Rr(NV,nj), h, gf, gsf, e, cj, cjo
+        real(dp) :: i, di(NV), th, tho
+        integer :: j, k, fl
+        A = 0.0_dp; B = 0.0_dp; Dm = 0.0_dp; Rr = 0.0_dp
+        do k = 1, nj - 1
+            h = (dx(k) + dx(k+1))/2.0_dp
+            if (k < s) then
+                gf = eps_sep/tau_sep/h; gsf = (1.0_dp - eps_sep)*sigma/h
+            else
+                gf = eps/tortuosity/h; gsf = (1.0_dp - eps)*sigma/h
+            end if
+            call sg_face(x(:,k), x(:,k+1), gf, gsf, Fv(:,k), dFa(:,:,k), dFb(:,:,k))
         end do
-        bounded_step = max(bounded_step, 0.0_dp)
-    end function bounded_step
+        ! foil face: N+ = I/F, zero electronic current, phi2 = 0 (the gauge)
+        Rr(IC,1) = Fv(1,1) - Ia/F
+        B(IC,:,1) = dFa(1,:,1); Dm(IC,:,1) = dFb(1,:,1)
+        Rr(IP1,1) = x(IP1,2) - x(IP1,1)
+        B(IP1,IP1,1) = -1.0_dp; Dm(IP1,IP1,1) = 1.0_dp
+        Rr(IP2,1) = x(IP2,1)
+        B(IP2,IP2,1) = 1.0_dp
+        ! separator, interface and cathode: flux differences (flux fl -> row IC, IP1, IP2) plus storage
+        do j = 2, nj - 1
+            do fl = 1, 3
+                Rr(fl,j) = Fv(fl,j) - Fv(fl,j-1)
+                B(fl,:,j) = B(fl,:,j) + dFa(fl,:,j) - dFb(fl,:,j-1)
+                Dm(fl,:,j) = Dm(fl,:,j) + dFb(fl,:,j)
+                A(fl,:,j) = A(fl,:,j) - dFa(fl,:,j-1)
+            end do
+            e = eps
+            if (j < s) e = eps_sep
+            cj = c_bulk*exp(x(IC,j)); cjo = c_bulk*exp(xold(IC,j))
+            Rr(IC,j) = Rr(IC,j) + e*dx(j)*(cj - cjo)/dt
+            B(IC,IC,j) = B(IC,IC,j) + e*dx(j)*cj/dt
+        end do
+        ! collector: no salt flux, no ionic current, electronic current I
+        Rr(IC,nj) = -Fv(1,nj-1); A(IC,:,nj) = -dFa(1,:,nj-1); B(IC,:,nj) = -dFb(1,:,nj-1)
+        Rr(IP1,nj) = Fv(2,nj-1) - Ia; A(IP1,:,nj) = dFa(2,:,nj-1); B(IP1,:,nj) = dFb(2,:,nj-1)
+        Rr(IP2,nj) = Fv(3,nj-1); A(IP2,:,nj) = dFa(3,:,nj-1); B(IP2,:,nj) = dFb(3,:,nj-1)
+        ! the S column: fixed outside the cathode, the particles at s..nj
+        do j = 1, nj
+            Rr(ICS,j) = x(ICS,j) - xold(ICS,j)
+            B(ICS,:,j) = 0.0_dp
+            B(ICS,ICS,j) = 1.0_dp
+        end do
+        do j = s, nj
+            call lrate(x(:,j), i, di)
+            Rr(IC,j) = Rr(IC,j) - spec_a*i*dx(j)/F
+            B(IC,:,j) = B(IC,:,j) - spec_a*di*dx(j)/F
+            Rr(IP1,j) = Rr(IP1,j) + spec_a*i*dx(j)
+            B(IP1,:,j) = B(IP1,:,j) + spec_a*di*dx(j)
+            Rr(IP2,j) = Rr(IP2,j) - spec_a*i*dx(j)
+            B(IP2,:,j) = B(IP2,:,j) - spec_a*di*dx(j)
+            th = sigm(x(ICS,j)); tho = sigm(xold(ICS,j))
+            Rr(ICS,j) = vf_AM*cs_max()*(th - tho)/dt + spec_a*i/F
+            B(ICS,:,j) = spec_a*di/F
+            B(ICS,ICS,j) = B(ICS,ICS,j) + vf_AM*cs_max()*th*sigm(-x(ICS,j))/dt
+        end do
+        G = -Rr
+    end subroutine lel_assemble
+
+    real(dp) function lbounded(d)
+        !! Newton step length <= 1 limiting |du| <= 1, |dphi| <= 0.1 V and |ds| <= 2 per iteration.
+        real(dp), intent(in) :: d(NV,nj)
+        real(dp) :: caps(NV), mx
+        integer :: k
+        caps = [1.0_dp, 0.1_dp, 0.1_dp, 2.0_dp]
+        lbounded = 1.0_dp
+        do k = 1, NV
+            mx = maxval(abs(d(k,:)))
+            if (mx > caps(k)) lbounded = min(lbounded, caps(k)/mx)
+        end do
+    end function lbounded
+
+    real(dp) function phys_update(x, d)
+        !! The Newton update in the physical variables: max of e^u |du|, |dphi| and theta(1-theta) |ds|.
+        real(dp), intent(in) :: x(NV,nj), d(NV,nj)
+        integer :: j
+        phys_update = 0.0_dp
+        do j = 1, nj
+            phys_update = max(phys_update, exp(x(IC,j))*abs(d(IC,j)), abs(d(IP1,j)), abs(d(IP2,j)), &
+                              sigm(x(ICS,j))*sigm(-x(ICS,j))*abs(d(ICS,j)))
+        end do
+    end function phys_update
+
+    logical function converged(upd, prev)
+        !! Newton convergence: the update is below newton_tol, or it has stagnated at the round-off
+        !! floor (within 1e3*newton_tol and down by less than half since the last iteration).
+        real(dp), intent(in) :: upd, prev
+        converged = upd <= newton_tol .or. (upd <= 1.0e3_dp*newton_tol .and. upd >= 0.5_dp*prev)
+    end function converged
 
     subroutine equilibrate()
         !! Scale every equation by the largest entry of its row in B (the solution is unchanged).
@@ -753,53 +926,62 @@ contains
     end subroutine equilibrate
 
     subroutine newton_step(h, ok)
-        !! One backward-Euler step of length h, solved with Newton's method; c is updated on success.
+        !! One backward-Euler step of length h in the log variables; c is updated on success.
         real(dp), intent(in) :: h
         logical, intent(out) :: ok
-        real(dp) :: c_old(NV,nj), Tt(NV,nj), scale(NV), lam
+        real(dp) :: c_old(NV,nj), lam, upd, prev, raw
         integer :: k, st
         c_old = c
-        call time_terms(h, Tt)
-        scale = [c_bulk, 1.0_dp, 1.0_dp, cs_max()]
         ok = .false.
+        prev = huge(1.0_dp)
         do k = 1, newton_max_iter
-            call assemble(h)
-            G = G - Tt*(c - c_old)
+            call lel_assemble(c, c_old, h, i_app)
             call equilibrate()
             call band_solve(NV, nj, A, B, Dm, G, dc, st)
             if (st /= BAND_OK) exit
-            lam = bounded_step(dc)
+            lam = lbounded(dc)
+            raw = maxval(abs(dc))
             c = c + lam*dc
-            if (lam == 1.0_dp .and. maxval(abs(dc)/spread(scale, 2, nj)) <= newton_tol) then
+            upd = phys_update(c, dc)
+            if (.not. ieee_is_finite(raw) .or. raw > 1.0e3_dp) exit
+            if (lam == 1.0_dp .and. converged(upd, prev)) then
                 ok = .true.
                 return
             end if
+            prev = upd
         end do
         c = c_old
     end subroutine newton_step
 
     subroutine advance(dt, t_done, stopped, ok, check, vlo, vhi)
-        !! Advance by dt at the current i_app, halving the sub-step on Newton failure. With `check`,
-        !! a sub-step that crosses a voltage cutoff by more than 0.1 mV is halved, so the step ends
-        !! within 0.1 mV of the cutoff (see simulate.advance in Python).
+        !! Advance by dt at the current i_app. Newton failures halve the sub-step (down to 1e-10 s, at
+        !! most 200 times per step; after each success it doubles again); with `check`, a sub-step that
+        !! crosses a voltage cutoff by more than 0.1 mV is halved, so the step ends within 0.1 mV of the
+        !! cutoff (see driver.advance in Python). On giving up, c is the state at the start of the step.
         real(dp), intent(in) :: dt, vlo, vhi
         logical, intent(in) :: check
         real(dp), intent(out) :: t_done
         logical, intent(out) :: stopped, ok
-        real(dp), parameter :: min_dt = 1.0e-6_dp, event_dv = 1.0e-4_dp, event_min_dt = 1.0e-9_dp
-        real(dp) :: hh, vv, mg, c_save(NV,nj)
+        real(dp), parameter :: min_dt = 1.0e-10_dp, event_dv = 1.0e-4_dp, event_min_dt = 1.0e-12_dp
+        integer, parameter :: max_failures = 200
+        real(dp) :: hh, vv, mg, c_save(NV,nj), c_begin(NV,nj)
+        integer :: failures
         logical :: good
         t_done = 0.0_dp
         hh = dt
+        failures = 0
         stopped = .false.
         ok = .true.
+        c_begin = c
         do while (t_done < dt)
             hh = min(hh, dt - t_done)
             c_save = c
             call newton_step(hh, good)
             if (.not. good) then
-                if (hh/2 < min_dt) then
+                failures = failures + 1
+                if (hh/2 < min_dt .or. failures >= max_failures) then
                     ok = .false.
+                    c = c_begin
                     return
                 end if
                 hh = hh/2
@@ -820,8 +1002,36 @@ contains
                 end if
             end if
             t_done = t_done + hh
+            hh = 2.0_dp*hh
         end do
     end subroutine advance
+
+    character(len=32) function limit_reason()
+        !! The physical limit the state has reached, reported as the exit reason when a step cannot be
+        !! solved: electrolyte below 1e-3*c_bulk anywhere, or particles within 1e-3 of full or empty.
+        real(dp) :: cmin, thmin, thmax
+        cmin = c_bulk*exp(minval(c(IC,:)))
+        thmin = sigm(minval(c(ICS,s:nj)))
+        thmax = sigm(maxval(c(ICS,s:nj)))
+        if (cmin < 1.0e-3_dp*c_bulk) then
+            limit_reason = 'electrolyte_depleted'
+        else if (thmax > 1.0_dp - 1.0e-3_dp) then
+            limit_reason = 'particles_full'
+        else if (thmin < 1.0e-3_dp) then
+            limit_reason = 'particles_empty'
+        else
+            limit_reason = 'solver_fail'
+        end if
+    end function limit_reason
+
+    real(dp) function c_foil()
+        !! Electrolyte concentration at the foil (corrected mode stores u = ln(c/c_bulk)).
+        if (faithful) then
+            c_foil = c(IC,1)
+        else
+            c_foil = c_bulk*exp(c(IC,1))
+        end if
+    end function c_foil
 
     ! =============================== assembly ===============================
     subroutine face_coeffs(e, dcat, ucat, dan, uan, cface, gphi2, dd, ff)
@@ -963,7 +1173,7 @@ contains
     real(dp) function li_eta()
         !! Signed overpotential of the lithium counter electrode (negative on discharge).
         real(dp) :: i0_li, alpha
-        i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
+        i0_li = F*k_Li*(c_foil()**0.5_dp)*(c_Li_ref**0.5_dp)
         alpha = 0.5_dp
         if (.not. faithful) then           ! symmetric Butler-Volmer (D-12); i_app is the present current
             li_eta = -(R*T/(alpha*F))*asinh(i_app/(2.0_dp*i0_li))
@@ -978,7 +1188,7 @@ contains
 
     real(dp) function li_nernst()
         !! Corrected mode: Nernst potential of the lithium foil, (RT/F) ln(c/c_Li_ref) [V].
-        li_nernst = R*T/F*log(c(IC,1)/c_Li_ref)
+        li_nernst = R*T/F*log(c_foil()/c_Li_ref)
     end function li_nernst
 
     real(dp) function cell_voltage()
@@ -1008,10 +1218,10 @@ contains
         st = 'R'
         if (i_app > 0) st = 'D'
         if (i_app < 0) st = 'C'
-        i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
+        i0_li = F*k_Li*(c_foil()**0.5_dp)*(c_Li_ref**0.5_dp)
         eta = li_eta()
         write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15,1X,ES15.5)') st, time/3600.0_dp, cell_voltage(), &
-            mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c(IC,1), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp
+            mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c_foil(), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp
     end subroutine write_row_c
 
     subroutine write_row(header)
@@ -1024,7 +1234,7 @@ contains
                 'mA/cm2', 'mol/cm3'
         end if
         equiv = mAhg*M*lit36/F
-        i0_li = F*k_Li*(c(IC,1)**0.5_dp)*(c_Li_ref**0.5_dp)
+        i0_li = F*k_Li*(c_foil()**0.5_dp)*(c_Li_ref**0.5_dp)
         eta = li_eta()
         write(ounit,'(A5,1X,2(F12.5,1X),20(ES15.5,1X))') state, time/real(3600, dp), c(IP1,nj) + eta, equiv, &
             eta*1.0e3_dp, i0_li*1.0e3_dp, c(IC,1)

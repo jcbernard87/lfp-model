@@ -177,6 +177,23 @@ bool solve(int n, int nj, const std::vector<double>& A, const std::vector<double
 // ============================== input ==============================
 double r32(double x) { return static_cast<double>(static_cast<float>(x)); }
 
+// ---- corrected mode: log variables and Scharfetter-Gummel fluxes (docs/model.md section 10) ----
+double bern(double x) {  // B(x) = x/(e^x - 1), with its series near 0
+    if (std::abs(x) < 1.0e-3) return 1.0 - x / 2.0 + x * x / 12.0;
+    if (x > 700.0) return x * std::exp(-x);
+    return x / (std::exp(x) - 1.0);
+}
+double bern_p(double x) {  // B'(x) = B(x) (1 - B(-x)) / x, with its series near 0
+    if (std::abs(x) < 1.0e-3) return -0.5 + x / 6.0 - x * x * x / 180.0;
+    return bern(x) * (1.0 - bern(-x)) / x;
+}
+double softplus(double x) { return std::max(x, 0.0) + std::log(1.0 + std::exp(-std::abs(x))); }
+// 1/(1 + e^-x) without cancellation for either sign (use sigm(-x) for 1 - sigm(x))
+double sigm(double x) {
+    const double e = std::exp(-std::abs(x));
+    return x >= 0.0 ? 1.0 / (1.0 + e) : e / (1.0 + e);
+}
+
 struct Params {
     double L_cath_um = 24.0, L_sep = 25.0e-4;  // cathode thickness in um (L_cath = L_cath_um*1e-4 cm)
     int nj = 101, sep_node = 22;
@@ -197,6 +214,7 @@ struct Params {
     std::string steps;                     // corrected-mode protocol (docs/protocol.md)
     int cycles = 1;
     double write_interval = 18.0;          // [s], corrected mode
+    double kappa_bg = 1.0e-8;              // corrected: background (solvent) ionic conductivity [S/cm]
     std::string file = "Time_Voltage.txt";
 };
 
@@ -225,7 +243,7 @@ Params read_input(const std::string& path) {
     std::map<std::string, double*> reals = {
         {"l_cath_um", &p.L_cath_um}, {"l_sep", &p.L_sep}, {"eps", &p.eps}, {"eps_am", &p.eps_AM}, {"f_am", &p.f_AM},
         {"eps_sep", &p.eps_sep}, {"tau_sep", &p.tau_sep}, {"bruggeman", &p.bruggeman}, {"d", &p.D},
-        {"t_plus", &p.t_plus}, {"c_bulk", &p.c_bulk}, {"z_plus", &p.z_plus}, {"z_minus", &p.z_minus},
+        {"t_plus", &p.t_plus}, {"c_bulk", &p.c_bulk}, {"kappa_bg", &p.kappa_bg}, {"z_plus", &p.z_plus}, {"z_minus", &p.z_minus},
         {"sigma", &p.sigma}, {"m", &p.M}, {"rho", &p.rho}, {"q_th", &p.Q_th}, {"r_p", &p.R_p},
         {"k_rxn", &p.k_rxn}, {"alpha_a", &p.alpha_a}, {"alpha_c", &p.alpha_c}, {"k_li", &p.k_Li},
         {"c_li_ref", &p.c_Li_ref}, {"r", &p.R}, {"t", &p.T}, {"f", &p.F}, {"c_rate", &p.C_rate},
@@ -339,6 +357,7 @@ struct Model {
     double i_app;  // applied current density [A/cm2]; changes step by step in corrected mode
     bool full_current;
     double dcat_s, dan_s, ucat_s, uan_s, dcat_c, dan_c, ucat_c, uan_c;
+    double dplus = 0.0, dminus = 0.0;  // ion diffusivities (corrected mode)
     int s;  // 0-based interface node
     std::vector<double> dx, aW, aE, bW, bE;
 
@@ -376,6 +395,7 @@ struct Model {
         const double t_an = 1.0 - p.t_plus;
         const double d_cat = p.D * (1.0 + (t_an / p.t_plus)) / (2.0 * t_an / p.t_plus);
         const double d_an = d_cat * t_an / p.t_plus;
+        dplus = d_cat; dminus = d_an;
         const double u_cat = d_cat / (p.R * p.T), u_an = d_an / (p.R * p.T);
         dcat_s = d_cat / p.tau_sep; dan_s = d_an / p.tau_sep; ucat_s = u_cat / p.tau_sep; uan_s = u_an / p.tau_sep;
         dcat_c = d_cat / tortuosity; dan_c = d_an / tortuosity; ucat_c = u_cat / tortuosity; uan_c = u_an / tortuosity;
@@ -456,31 +476,6 @@ struct Model {
 
     // ---- corrected-mode time step ----
     // storage coefficients: the time-derivative part of each row is T * (c - c_old)
-    std::vector<double> time_terms(double dt) const {
-        const int nj = p.nj;
-        std::vector<double> T(static_cast<std::size_t>(nj) * NV, 0.0);
-        T[ICS] = -(vf_AM / dt);
-        for (int j = 1; j < s; ++j) { T[j * NV + IC] = -(p.eps_sep / dt * dx[j]); T[j * NV + ICS] = -((1.0 - p.eps_sep) / dt); }
-        for (int j = s + 1; j < nj - 1; ++j) T[j * NV + IC] = -((p.eps / dt) * dx[j]);
-        for (int j = s; j < nj; ++j) T[j * NV + ICS] = -(vf_AM / dt);
-        return T;
-    }
-    // largest step <= 1 keeping 0 < c and 0 < cs < cs_max (at most 90 % of the way to a bound)
-    // and changing no potential by more than 0.1 V (Butler-Volmer exponentials make Newton overshoot)
-    double bounded_step(const std::vector<double>& c, const std::vector<double>& d) const {
-        const double keep = 0.9, csm = cs_max(), max_dphi = 0.1;  // potential change cap per iteration [V]
-        double lam = 1.0, dphi = 0.0;
-        for (int j = 0; j < p.nj; ++j)
-            dphi = std::max({dphi, std::abs(d[j * NV + IP1]), std::abs(d[j * NV + IP2])});
-        if (dphi > max_dphi) lam = max_dphi / dphi;
-        for (int j = 0; j < p.nj; ++j) {
-            const double dcc = d[j * NV + IC], dcs = d[j * NV + ICS];
-            if (dcc < 0) lam = std::min(lam, keep * (c[j * NV + IC] - 0.0) / -dcc);
-            if (dcs < 0) lam = std::min(lam, keep * (c[j * NV + ICS] - 0.0) / -dcs);
-            if (dcs > 0) lam = std::min(lam, keep * (csm - c[j * NV + ICS]) / dcs);
-        }
-        return std::max(lam, 0.0);
-    }
 
     // ---- assembly ----
     void face(double e, double dcat, double ucat, double dan, double uan, double cf, double gphi2, Mat& dd, Mat& ff) const {
@@ -595,7 +590,159 @@ struct Model {
             }
         }
     }
+
+    // ---- corrected mode (log variables; docs/model.md section 10) ----
+    // Butler-Volmer: i_n and d i_n / d(u, phi1, phi2, s). U is the arctangent fit plus the
+    // thermodynamic tails (D-16) and the electrolyte Nernst term (D-14).
+    void log_rate(const double* x, double& i, double di[NV]) const {
+        const double rtf = p.R * p.T / p.F, ff = 1.0 / rtf, th = sigm(x[ICS]), om = sigm(-x[ICS]);
+        const double z1 = -(ocp_c[2] * th) + ocp_c[3], z2 = -(ocp_c[5] * th) + ocp_c[6];
+        const double fit = ocp_c[0] + ocp_c[1] * std::atan(z1) - ocp_c[4] * std::atan(z2);
+        const double dfit = ocp_c[1] * (-ocp_c[2]) / (1.0 + z1 * z1) - ocp_c[4] * (-ocp_c[5]) / (1.0 + z2 * z2);
+        const double theta_tail = 1.0e-4, se = std::log(theta_tail / (1.0 - theta_tail));
+        const double tail = rtf * (softplus(se - x[ICS]) - softplus(x[ICS] + se));
+        const double dtail = -rtf * (sigm(se - x[ICS]) + sigm(x[ICS] + se));
+        const double dU_ds = dfit * th * om + dtail;
+        const double ln_i0 = std::log(p.F * p.k_rxn * std::pow(p.c_bulk, p.alpha_a) * std::pow(cs_max(), p.alpha_a + p.alpha_c))
+                             + p.alpha_a * x[IC] - p.alpha_a * softplus(x[ICS]) - p.alpha_c * softplus(-x[ICS]);
+        const double eta = x[IP1] - x[IP2] - (fit + tail + rtf * x[IC]);
+        const double ea = std::exp(ln_i0 + p.alpha_a * ff * eta), ec = std::exp(ln_i0 - p.alpha_c * ff * eta);
+        i = ea - ec;
+        const double di_deta = p.alpha_a * ff * ea + p.alpha_c * ff * ec;
+        di[IC] = i * p.alpha_a - di_deta * rtf;
+        di[IP1] = di_deta;
+        di[IP2] = -di_deta;
+        di[ICS] = i * (-p.alpha_a * th + p.alpha_c * om) - di_deta * dU_ds;
+    }
+    // face fluxes (N+, i1, i2) from xa to xb (Scharfetter-Gummel) and derivatives dFa, dFb [3][NV]
+    void sg_face(const double* xa, const double* xb, double g, double gs, double* Fv, double* dFa, double* dFb) const {
+        const double F = p.F, ff = F / (p.R * p.T);
+        const double ca = p.c_bulk * std::exp(xa[IC]), cb = p.c_bulk * std::exp(xb[IC]), d = ff * (xb[IP2] - xa[IP2]);
+        const double Bp = bern(d), Bm = bern(-d), dBp = bern_p(d), dBm = bern_p(-d);
+        const double Np = g * dplus * (Bp * ca - Bm * cb), Nm = g * dminus * (Bm * ca - Bp * cb);
+        const double dNp_dd = g * dplus * (dBp * ca + dBm * cb), dNm_dd = g * dminus * (-dBm * ca - dBp * cb);
+        const double kb = g * p.kappa_bg;
+        Fv[0] = Np;
+        Fv[1] = -gs * (xb[IP1] - xa[IP1]);
+        Fv[2] = F * (Np - Nm) - kb * (xb[IP2] - xa[IP2]);
+        for (int z = 0; z < 3 * NV; ++z) { dFa[z] = 0.0; dFb[z] = 0.0; }
+        dFa[0 * NV + IC] = g * dplus * Bp * ca;
+        dFb[0 * NV + IC] = -g * dplus * Bm * cb;
+        dFa[0 * NV + IP2] = -ff * dNp_dd;
+        dFb[0 * NV + IP2] = ff * dNp_dd;
+        dFa[1 * NV + IP1] = gs;
+        dFb[1 * NV + IP1] = -gs;
+        dFa[2 * NV + IC] = F * (dFa[0 * NV + IC] - g * dminus * Bm * ca);
+        dFb[2 * NV + IC] = F * (dFb[0 * NV + IC] + g * dminus * Bp * cb);
+        dFa[2 * NV + IP2] = -F * ff * (dNp_dd - dNm_dd) + kb;
+        dFb[2 * NV + IP2] = F * ff * (dNp_dd - dNm_dd) - kb;
+    }
+    // residual and blocks (G = -R) in the log variables, with the particles at nodes s..nj-1
+    void log_assemble(const std::vector<double>& x, const std::vector<double>& xold, double dt, double Ia,
+                      std::vector<double>& A, std::vector<double>& B, std::vector<double>& Dm, std::vector<double>& G) const {
+        const int nj = p.nj;
+        const double F = p.F;
+        std::fill(A.begin(), A.end(), 0.0); std::fill(B.begin(), B.end(), 0.0); std::fill(Dm.begin(), Dm.end(), 0.0);
+        std::vector<double> R(static_cast<std::size_t>(nj) * NV, 0.0), Fv(3 * static_cast<std::size_t>(nj - 1)),
+            dFa(3 * NV * static_cast<std::size_t>(nj - 1)), dFb(dFa.size());
+        for (int k = 0; k < nj - 1; ++k) {
+            const double h = (dx[k] + dx[k + 1]) / 2.0;
+            const bool sep = k < s;
+            const double g = (sep ? p.eps_sep / p.tau_sep : p.eps / tortuosity) / h;
+            const double gs = (sep ? 1.0 - p.eps_sep : 1.0 - p.eps) * p.sigma / h;
+            sg_face(&x[static_cast<std::size_t>(k) * NV], &x[static_cast<std::size_t>(k + 1) * NV], g, gs, &Fv[3 * k],
+                    &dFa[3 * NV * k], &dFb[3 * NV * k]);
+        }
+        auto X = [&](int j, int v) { return x[static_cast<std::size_t>(j) * NV + v]; };
+        auto blk = [&](std::vector<double>& M, int j, int r, int v) -> double& { return M[(static_cast<std::size_t>(j) * NV + r) * NV + v]; };
+        auto FA = [&](int k, int f, int v) { return dFa[3 * NV * k + f * NV + v]; };
+        auto FB = [&](int k, int f, int v) { return dFb[3 * NV * k + f * NV + v]; };
+        auto Rr = [&](int j, int r) -> double& { return R[static_cast<std::size_t>(j) * NV + r]; };
+        // foil face: N+ = I/F, zero electronic current, phi2 = 0 (the gauge)
+        Rr(0, IC) = Fv[0] - Ia / F;
+        for (int v = 0; v < NV; ++v) { blk(B, 0, IC, v) = FA(0, 0, v); blk(Dm, 0, IC, v) = FB(0, 0, v); }
+        Rr(0, IP1) = X(1, IP1) - X(0, IP1);
+        blk(B, 0, IP1, IP1) = -1.0; blk(Dm, 0, IP1, IP1) = 1.0;
+        Rr(0, IP2) = X(0, IP2);
+        blk(B, 0, IP2, IP2) = 1.0;
+        // separator, interface and cathode
+        for (int j = 1; j < nj - 1; ++j) {
+            for (int f = 0; f < 3; ++f) {
+                Rr(j, f) = Fv[3 * j + f] - Fv[3 * (j - 1) + f];
+                for (int v = 0; v < NV; ++v) {
+                    blk(B, j, f, v) += FA(j, f, v) - FB(j - 1, f, v);
+                    blk(Dm, j, f, v) += FB(j, f, v);
+                    blk(A, j, f, v) += -FA(j - 1, f, v);
+                }
+            }
+            const double e = j < s ? p.eps_sep : p.eps;
+            const double cj = p.c_bulk * std::exp(X(j, IC)), cjo = p.c_bulk * std::exp(xold[static_cast<std::size_t>(j) * NV + IC]);
+            Rr(j, IC) += e * dx[j] * (cj - cjo) / dt;
+            blk(B, j, IC, IC) += e * dx[j] * cj / dt;
+        }
+        // collector: no salt flux, no ionic current, electronic current I
+        const int n = nj - 1, kl = nj - 2;
+        Rr(n, IC) = -Fv[3 * kl];
+        Rr(n, IP1) = Fv[3 * kl + 1] - Ia;
+        Rr(n, IP2) = Fv[3 * kl + 2];
+        for (int v = 0; v < NV; ++v) {
+            blk(A, n, IC, v) = -FA(kl, 0, v); blk(B, n, IC, v) = -FB(kl, 0, v);
+            blk(A, n, IP1, v) = FA(kl, 1, v); blk(B, n, IP1, v) = FB(kl, 1, v);
+            blk(A, n, IP2, v) = FA(kl, 2, v); blk(B, n, IP2, v) = FB(kl, 2, v);
+        }
+        // the S column: fixed outside the cathode, the particles at s..nj-1
+        for (int j = 0; j < nj; ++j) {
+            Rr(j, ICS) = X(j, ICS) - xold[static_cast<std::size_t>(j) * NV + ICS];
+            for (int v = 0; v < NV; ++v) blk(B, j, ICS, v) = 0.0;
+            blk(B, j, ICS, ICS) = 1.0;
+        }
+        for (int j = s; j < nj; ++j) {
+            double i, di[NV];
+            log_rate(&x[static_cast<std::size_t>(j) * NV], i, di);
+            const double a = spec_a;
+            Rr(j, IC) -= a * i * dx[j] / F;
+            Rr(j, IP1) += a * i * dx[j];
+            Rr(j, IP2) -= a * i * dx[j];
+            for (int v = 0; v < NV; ++v) {
+                blk(B, j, IC, v) -= a * di[v] * dx[j] / F;
+                blk(B, j, IP1, v) += a * di[v] * dx[j];
+                blk(B, j, IP2, v) -= a * di[v] * dx[j];
+            }
+            const double th = sigm(X(j, ICS)), tho = sigm(xold[static_cast<std::size_t>(j) * NV + ICS]);
+            Rr(j, ICS) = vf_AM * cs_max() * (th - tho) / dt + a * i / F;
+            for (int v = 0; v < NV; ++v) blk(B, j, ICS, v) = a * di[v] / F;
+            blk(B, j, ICS, ICS) += vf_AM * cs_max() * th * sigm(-X(j, ICS)) / dt;
+        }
+        for (std::size_t q = 0; q < G.size(); ++q) G[q] = -R[q];
+    }
 };
+
+// Newton convergence: the update is below tol, or it has stagnated at the round-off floor
+// (within 1e3*tol and down by less than half since the last iteration)
+bool converged(double upd, double prev, double tol) {
+    return upd <= tol || (upd <= 1.0e3 * tol && upd >= 0.5 * prev);
+}
+
+// Newton step length <= 1 limiting |du| <= 1, |dphi| <= 0.1 V and |ds| <= 2 per iteration
+double lbounded(const std::vector<double>& d) {
+    const double caps[NV] = {1.0, 0.1, 0.1, 2.0};
+    double lam = 1.0;
+    for (int k = 0; k < NV; ++k) {
+        double mx = 0.0;
+        for (std::size_t q = k; q < d.size(); q += NV) mx = std::max(mx, std::abs(d[q]));
+        if (mx > caps[k]) lam = std::min(lam, caps[k] / mx);
+    }
+    return lam;
+}
+
+// the Newton update in the physical variables: max of e^u |du|, |dphi| and theta(1-theta) |ds|
+double phys_update(const std::vector<double>& x, const std::vector<double>& d) {
+    double u = 0.0;
+    for (std::size_t q = 0; q < x.size(); q += NV)
+        u = std::max({u, std::exp(x[q + IC]) * std::abs(d[q + IC]), std::abs(d[q + IP1]), std::abs(d[q + IP2]),
+                      sigm(x[q + ICS]) * sigm(-x[q + ICS]) * std::abs(d[q + ICS])});
+    return u;
+}
 
 // ============================== output ==============================
 std::string fixed12(double v) {
@@ -632,6 +779,10 @@ int main(int argc, char** argv) {
         for (int j = 0; j < nj; ++j) {
             c[j * NV + IC] = p.c_bulk; c[j * NV + IP1] = p.phi1_init; c[j * NV + IP2] = p.phi2_init; c[j * NV + ICS] = p.cs_init;
         }
+        if (!m.faithful) {  // corrected mode: u = ln(c/c_bulk) and the particles' log-odds
+            const double th0 = p.cs_init / m.cs_max();
+            for (int j = 0; j < nj; ++j) { c[j * NV + IC] = 0.0; c[j * NV + ICS] = std::log(th0 / (1.0 - th0)); }
+        }
         double t = 0.0, mAhg = 0.0, dt = p.t_max / static_cast<double>(p.n_steps);
         std::string exit_reason = "max_steps";
         int nsolve = 0;
@@ -647,7 +798,9 @@ int main(int argc, char** argv) {
                 std::fprintf(out, "%s\n", l.c_str());
             }
         };
-        auto i0_li = [&]() { return p.F * p.k_Li * std::pow(c[IC], 0.5) * std::pow(p.c_Li_ref, 0.5); };
+        // electrolyte concentration at the foil (corrected mode stores u = ln(c/c_bulk))
+        auto c_foil = [&]() { return m.faithful ? c[IC] : p.c_bulk * std::exp(c[IC]); };
+        auto i0_li = [&]() { return p.F * p.k_Li * std::pow(c_foil(), 0.5) * std::pow(p.c_Li_ref, 0.5); };
         // Li counter-electrode overpotential; corrected mode: symmetric Butler-Volmer (D-12)
         auto li_eta = [&](char state) {
             const double alpha = 0.5;
@@ -657,7 +810,7 @@ int main(int argc, char** argv) {
             return 0.0;
         };
         // corrected mode: Nernst potential of the lithium foil, (RT/F) ln(c/c_Li_ref)
-        auto li_nernst = [&]() { return p.R * p.T / p.F * std::log(c[IC] / p.c_Li_ref); };
+        auto li_nernst = [&]() { return p.R * p.T / p.F * std::log(c_foil() / p.c_Li_ref); };
         // Corrected mode: cell voltage against the lithium foil (0 V). The solver fixes the gauge with
         // phi2 = 0 at the foil face; the equations depend only on potential differences, so the
         // foil-referenced potentials are the solved ones minus U_Li + eta_Li. (Imposing the foil
@@ -709,7 +862,7 @@ int main(int argc, char** argv) {
                 const double eta = li_eta(st);
                 std::fprintf(out, "%5c %s %s %s %s %s %s %s %15d %s\n", st, fixed12(t / 3600.0).c_str(),
                              fixed12(cell_voltage()).c_str(), sci15(mAhg * p.M * 3.6 / p.F).c_str(),
-                             sci15(eta * 1.0e3).c_str(), sci15(i0_li() * 1.0e3).c_str(), sci15(c[IC]).c_str(),
+                             sci15(eta * 1.0e3).c_str(), sci15(i0_li() * 1.0e3).c_str(), sci15(c_foil()).c_str(),
                              sci15(m.i_app * 1.0e3).c_str(), step, sci15(li_nernst() * 1.0e3).c_str());
             };
             // scale every equation by the largest entry of its row in B (the solution is unchanged)
@@ -724,29 +877,32 @@ int main(int argc, char** argv) {
                         G[static_cast<std::size_t>(j) * NV + r] = G[static_cast<std::size_t>(j) * NV + r] / sc;
                     }
             };
-            // one backward-Euler step of length h at the current m.i_app, solved with Newton
+            // one backward-Euler step of length h at the current m.i_app, solved with Newton (log variables)
             auto newton_step = [&](double h) {
-                const std::vector<double> c_old = c, T = m.time_terms(h);
-                const double scale[NV] = {p.c_bulk, 1.0, 1.0, m.cs_max()};
+                const std::vector<double> c_old = c;
+                double prev = std::numeric_limits<double>::infinity();
                 for (int k = 0; k < p.newton_max_iter; ++k) {
-                    m.assemble(c, h, A, B, Dm, G);
-                    for (std::size_t q = 0; q < G.size(); ++q) G[q] = G[q] - T[q] * (c[q] - c_old[q]);
+                    m.log_assemble(c, c_old, h, m.i_app, A, B, Dm, G);
                     equilibrate();
                     if (!band::solve(NV, nj, A, B, Dm, G, dc, band::Pivot::partial)) break;
-                    const double lam = m.bounded_step(c, dc);
-                    double worst = 0.0;
-                    for (std::size_t q = 0; q < c.size(); ++q) {
-                        c[q] = c[q] + lam * dc[q];
-                        worst = std::max(worst, std::abs(dc[q]) / scale[q % NV]);
-                    }
-                    if (lam == 1.0 && worst <= p.newton_tol) return true;
+                    const double lam = lbounded(dc);
+                    double raw = 0.0;
+                    for (double v : dc) raw = std::max(raw, std::abs(v));
+                    for (std::size_t q = 0; q < c.size(); ++q) c[q] = c[q] + lam * dc[q];
+                    const double upd = phys_update(c, dc);
+                    if (!std::isfinite(raw) || raw > 1.0e3) break;
+                    if (lam == 1.0 && converged(upd, prev, p.newton_tol)) return true;
+                    prev = upd;
                 }
                 c = c_old;
                 return false;
             };
             // advance by dt; with check, locate a voltage-cutoff crossing to within 0.1 mV
             auto advance = [&](double dtt, double& t_done, bool& stopped, bool check, double vlo, double vhi) {
-                const double min_dt = 1.0e-6, event_dv = 1.0e-4, event_min_dt = 1.0e-9;
+                const double min_dt = 1.0e-10, event_dv = 1.0e-4, event_min_dt = 1.0e-12;
+                const int max_failures = 200;  // Newton failures allowed within one step
+                int failures = 0;
+                const std::vector<double> c_begin = c;
                 double hh = dtt;
                 t_done = 0.0;
                 stopped = false;
@@ -754,7 +910,10 @@ int main(int argc, char** argv) {
                     hh = std::min(hh, dtt - t_done);
                     const std::vector<double> c_save = c;
                     if (!newton_step(hh)) {
-                        if (hh / 2 < min_dt) return false;
+                        if (hh / 2 < min_dt || ++failures >= max_failures) {
+                            c = c_begin;  // give up: report the state at the start of the step
+                            return false;
+                        }
                         hh = hh / 2;
                         continue;
                     }
@@ -768,8 +927,23 @@ int main(int argc, char** argv) {
                         }
                     }
                     t_done = t_done + hh;
+                    hh = 2.0 * hh;  // grow back after a success (up to dt, by the min above)
                 }
                 return true;
+            };
+            // the physical limit the state has reached, reported as the exit reason when a step cannot be
+            // solved: electrolyte below 1e-3*c_bulk anywhere, or particles within 1e-3 of full or empty
+            auto limit_reason = [&]() -> std::string {
+                double cmin = std::numeric_limits<double>::infinity(), thmin = cmin, thmax = -cmin;
+                for (int j = 0; j < nj; ++j) cmin = std::min(cmin, p.c_bulk * std::exp(c[j * NV + IC]));
+                for (int j = m.s; j < nj; ++j) {
+                    thmin = std::min(thmin, sigm(c[j * NV + ICS]));
+                    thmax = std::max(thmax, sigm(c[j * NV + ICS]));
+                }
+                if (cmin < 1.0e-3 * p.c_bulk) return "electrolyte_depleted";
+                if (thmax > 1.0 - 1.0e-3) return "particles_full";
+                if (thmin < 1.0e-3) return "particles_empty";
+                return "solver_fail";
             };
             // one constant-voltage time step: find I with V(I) = V_set (see simulate.cv_step in Python)
             auto cv_step = [&](double h, double V_set, double& I) {
@@ -858,7 +1032,7 @@ int main(int argc, char** argv) {
                         why = stopped && cell_voltage() <= st.Vmin ? "cutoff_low" : "cutoff_high";
                     }
                     m.i_app = I;
-                    if (!ok) { write_row(false, step_no); exit_reason = "solver_fail"; finished = false; break; }
+                    if (!ok) { write_row(false, step_no); exit_reason = limit_reason(); finished = false; break; }
                     mAhg = mAhg + 1000.0 * (I / m.mass_area) * h_done / 3600.0;
                     t = t + h_done;
                     t_step = t_step + h_done;
