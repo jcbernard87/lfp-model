@@ -92,18 +92,22 @@ $$
 
 $i_1 = -(1-\varepsilon)\sigma\,\partial\Phi_1/\partial x$, and Butler–Volmer kinetics
 $i_n = i_0\left[e^{\alpha_a F\eta/RT} - e^{-\alpha_c F\eta/RT}\right]$ with $\eta = \Phi_1 - \Phi_2 - U(\theta)$.
-The separator has only transport. At the lithium foil $N_+ = I/F$ and $\Phi_2 = 0$; at the current collector $i_1 = I$."""),
+The separator has only transport. At the lithium foil $N_+ = I/F$ and $\Phi_2 = 0$; at the current collector $i_1 = I$.
+
+## Log variables (corrected mode)
+
+The corrected mode solves for $u = \ln(c/c_\text{bulk})$ and the particles' log-odds $s = \ln(\theta/(1-\theta))$, $\theta = c_s/c_{s,\max}$, instead of $c$ and $c_s$. Concentrations then stay positive and $0 < \theta < 1$ by construction, so the electrolyte can run out and particles can fill or empty smoothly, without clipping. The ion fluxes use exponential fitting (Scharfetter–Gummel), and the open-circuit potential has thermodynamic tails at the ends of the lithiation range (`docs/model.md` section 10). `LogModel.conc` and `LogModel.cs` convert a state back to concentrations."""),
 ("code", """import numpy as np
 import matplotlib.pyplot as plt
 import bandsolver
 
-from lfp_model import kinetics
-from lfp_model.model import Assembler, make_mesh
+from lfp_model.logcore import logit, sigmoid
+from lfp_model.logmodel import LogModel
 from lfp_model.params import Params
-from lfp_model.simulate import initial_state, newton_step
 
 p = Params(mode="corrected", C_rate=1.0)
-m = make_mesh(p)
+model = LogModel(p)
+m = model.mesh
 print(f"{p.nj} nodes; separator/cathode interface at node {m.s}")"""),
 ("md", """## The grid
 
@@ -112,34 +116,36 @@ Control volumes of width $\\Delta x_j$, with zero-volume nodes at the lithium fo
 plt.plot(m.x * 1e4, np.zeros_like(m.x), "|", ms=12)
 plt.axvline(p.L_sep * 1e4, color="k", lw=0.8)
 plt.xlabel("x [µm]"); plt.yticks([]); plt.title("node positions (separator | cathode)"); plt.show()"""),
-("md", """## The open-circuit potential and the kinetics"""),
-("code", """theta = np.linspace(0.001, 0.999, 400)
-cs = theta * kinetics.cs_max(p)
+("md", """## The open-circuit potential
+
+The fitted LiFePO₄ curve is flat over most of the range and bounded at both ends. The thermodynamic tails (deviation D-16) add the ideal-solution terms $\\pm(RT/F)\\ln\\theta$ that dominate only very close to an empty or full particle (outside $10^{-4} < \\theta < 1 - 10^{-4}$), so a particle approaches either end asymptotically. Plotted against $s$, the tails are the straight sections at both ends."""),
+("code", """s = np.linspace(-20, 20, 801)
+U = model.kin.ocp(np.zeros_like(s), s)
 fig, ax = plt.subplots(1, 2, figsize=(10, 3.5))
-ax[0].plot(theta, kinetics.ocp(p, cs)); ax[0].set_xlabel("θ"); ax[0].set_ylabel("U [V]")
-ax[1].plot(theta, kinetics.exchange_current(p, p.c_bulk, cs) * 1e3)
-ax[1].set_xlabel("θ"); ax[1].set_ylabel("i₀ [mA/cm²]")
+ax[0].plot(sigmoid(s), U); ax[0].set_xlabel("θ"); ax[0].set_ylabel("U [V]")
+ax[1].plot(s, U); ax[1].set_xlabel("s = ln(θ/(1-θ))"); ax[1].set_ylabel("U [V]")
+for a_ in ax: a_.set_ylim(2.8, 4.2)
 plt.tight_layout(); plt.show()"""),
 ("md", """## One time step with BAND
 
-Each backward-Euler step is a nonlinear system in block-tridiagonal form, $A_j\\,\\delta_{j-1} + B_j\\,\\delta_j + D_j\\,\\delta_{j+1} = G_j$ with $G = -F(c)$. The assembler builds the blocks, and `bandsolver.solve` solves them. `newton_step` repeats this until the update is below the tolerance."""),
-("code", """asm = Assembler(p)
-c0 = initial_state(p)
-A, B, D, G, _ = asm.assemble(c0, 1.0)
-print("block shapes:", A.shape, B.shape, D.shape, G.shape)
-dc = bandsolver.solve(A, B, D, G)
-print("first-iteration update, max |dΦ1| =", np.abs(dc[:, 1]).max(), "V")
+Each backward-Euler step is a nonlinear system in block-tridiagonal form, $A_j\\,\\delta_{j-1} + B_j\\,\\delta_j + D_j\\,\\delta_{j+1} = G_j$ with $G = -R(x)$. The electrode assembles the residual and the blocks, and `bandsolver.solve` solves them. `newton_step` repeats this until the update is below the tolerance."""),
+("code", """x0 = model.initial_state()
+R, A, B, D = model.el.residual_and_blocks(x0, x0, 1.0, p.i_app)
+print("block shapes:", A.shape, B.shape, D.shape, R.shape)
+dx = bandsolver.solve(A, B, D, -R)
+print("first-iteration update, max |dΦ1| =", np.abs(dx[:, 1]).max(), "V")
 
-c1, iterations = newton_step(asm, c0, 1.0)
-print("Newton converged in", iterations, "iterations")"""),
+history = []
+x1 = model.newton_step(x0, 1.0, p.i_app, history=history)
+print("Newton converged in", len(history), "iterations; updates:", ", ".join(f"{h:.1e}" for h in history))"""),
 ("md", """## Checking the Jacobian
 
-`bandsolver.check_jacobian` compares the hand-written Jacobian blocks with finite differences of the residual. The residual here includes the time term of the step from `c0`."""),
-("code", """def fill(c):
-    A, B, D, G, _ = asm.assemble(c, 1.0)
-    return A, B, D, G - asm.time_terms(1.0) * (c - c0)
+`bandsolver.check_jacobian` compares the hand-written Jacobian blocks with finite differences of the residual. The residual here includes the time term of the step from `x0`."""),
+("code", """def fill(x):
+    R, A, B, D = model.el.residual_and_blocks(x, x0, 1.0, p.i_app)
+    return A, B, D, -R
 
-chk = bandsolver.check_jacobian(fill, c1)
+chk = bandsolver.check_jacobian(fill, x1)
 print(f"max relative error {chk.max_error:.1e}")"""),
 ("md", """## Inside the cell during a discharge"""),
 ("code", """from lfp_model.simulate import run
@@ -148,10 +154,10 @@ snapshots = {}
 for t_s in (60, 1200, 2400, 3300):
     snapshots[t_s] = run(p, max_steps=t_s).final_state
 fig, ax = plt.subplots(1, 3, figsize=(13, 3.5))
-for t_s, c in snapshots.items():
-    ax[0].plot(m.x * 1e4, c[:, 0] * 1e3, label=f"{t_s} s")
-    ax[1].plot(m.x[m.s:] * 1e4, c[m.s:, 2] * 1e3)
-    ax[2].plot(m.x[m.s:] * 1e4, c[m.s:, 3] / kinetics.cs_max(p))
+for t_s, x in snapshots.items():
+    ax[0].plot(m.x * 1e4, model.conc(x) * 1e3, label=f"{t_s} s")
+    ax[1].plot(m.x[m.s:] * 1e4, x[m.s:, 2] * 1e3)
+    ax[2].plot(m.x[m.s:] * 1e4, model.cs(x)[m.s:] / model.cs_max)
 ax[0].set_ylabel("c [M]"); ax[1].set_ylabel("Φ₂ [mV]"); ax[2].set_ylabel("θ")
 for a_ in ax: a_.set_xlabel("x [µm]")
 ax[0].legend(); plt.tight_layout(); plt.show()"""),

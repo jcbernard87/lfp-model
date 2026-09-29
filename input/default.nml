@@ -10,6 +10,7 @@
 /
 &electrolyte
   D = 2.0d-6, t_plus = 0.25, c_bulk = 1.0d-3
+  kappa_bg = 1.0d-8        ! background (solvent) conductivity [S/cm], corrected mode
 /
 &active
   sigma = 3.0d-3, M = 125.759, rho = 3.6, Q_th = 0.170, R_p = 200.0d-7

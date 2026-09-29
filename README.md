@@ -68,7 +68,7 @@ A cycling protocol goes in a `&protocol` group ([docs/protocol.md](docs/protocol
 
 The model is a port of the author's PhD research code. The port was checked for errors while it was being made:
 
-- **`mode = 'corrected'`** (recommended) fixes every defect found. The fixes are listed with evidence and their measured effect in [docs/deviations.md](docs/deviations.md).
+- **`mode = 'corrected'`** (recommended) fixes every defect found. The fixes are listed with evidence and their measured effect in [docs/deviations.md](docs/deviations.md). The electrolyte can run out and particles can fill or empty smoothly, without clipping: the unknowns are the logarithm of the concentration and the log-odds of the lithiation, with exponential-fitting (Scharfetter–Gummel) fluxes and thermodynamic tails on the open-circuit potential ([docs/model.md](docs/model.md) section 10).
 - **`mode = 'faithful'`** reproduces the original program exactly, defects included. It is kept for comparison with earlier work. In faithful mode all three implementations reproduce the original program's output files byte for byte ([docs/validation.md](docs/validation.md)). Faithful mode runs only the original constant-current discharge.
 
 `input/default.nml` uses corrected mode. [`input/examples/faithful.nml`](input/examples/faithful.nml) reproduces the original.

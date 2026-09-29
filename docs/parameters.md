@@ -27,6 +27,7 @@ These are the default values in the original research code. The source line (`L�
 | `transference_num_cat` | t₊ | 0.25 | | L58 | |
 | `cbulk` | c⁰ | 0.001 (stored 0.0010000000474974513) | mol/cm³ | L61 | 1 M |
 | `z_cat`, `z_an` | z₊, z₋ | +1, −1 | | L63–L64 | |
+| (new) `kappa_bg` | κ_bg | 10⁻⁸ | S/cm | — | corrected mode (v0.3.0): the solvent's own ionic conductivity (neat carbonates are about 10⁻⁹ to 10⁻⁷ S/cm), about 10⁻⁶ of the 1 M electrolyte's; keeps Φ₂ defined where the salt is exhausted (model.md §10) |
 
 ## Active material (LiFePO₄)
 

@@ -142,7 +142,39 @@ A crystal (particle) scale with two unknowns exists in the source but is **inact
   - Rows are written *before* the step, so each row reports the state at time `t` with `mAh/g` already incremented to `t`.
 - Format: `A5, 2F12.5, ES15.5…`.
 
-## 10. Branch checklist (T2 verification)
+## 10. Corrected mode: log variables, exponential fitting and OCP tails (v0.3.0)
+
+Sections 1–9 describe the original equations in the concentrations c and c_s. Since v0.3.0 corrected mode solves the same conservation laws in variables that keep every state physical, so the electrolyte can run out and particles can fill or empty smoothly, without clipping. Faithful mode is unchanged.
+
+**Unknowns.** At every node: u = ln(c/c_bulk), Φ₁, Φ₂ and the particles' log-odds s = ln(θ/(1−θ)), θ = c_s/c_s,max. Then c = c_bulk·eᵘ > 0 and 0 < θ < 1 by construction. The storage terms stay in the conserved quantities, ε(c − c_old)/Δt and ε_AM c_s,max(θ − θ_old)/Δt, so salt and lithium are conserved to round-off. θ is evaluated with a sigmoid that is accurate for either sign of s, and 1 − θ as sigmoid(−s), so neither rounds to zero.
+
+**Kinetics.** The overpotential and the exchange current are written in the new variables:
+
+  η = Φ₁ − Φ₂ − U_fit(θ) − U_tail(s) − (RT/F)·u
+  ln i₀ = ln(F k c_bulk^α_a c_s,max^(α_a+α_c)) + α_a u − α_a ln(1 + eˢ) − α_c ln(1 + e⁻ˢ)
+
+The electrolyte Nernst term (D-14) is linear in u. i₀ has bounded derivatives in (u, s) as θ → 0 or 1, which replaces the regularization D-13.
+
+**Thermodynamic tails (D-16).** The arctangent fit U_fit(θ) is bounded at θ = 0 and θ = 1. With i₀ ∝ θ^α_c(1−θ)^α_a vanishing only as a power, a particle would then empty or fill completely in finite time, which no real insertion electrode does. The OCP gets the ideal-solution terms that dominate at the ends:
+
+  U_tail(s) = (RT/F)·[ln(1 + e^(s_e − s)) − ln(1 + e^(s + s_e))],  s_e = ln(θ_e/(1 − θ_e)),  θ_e = 10⁻⁴
+
+For θ ≪ θ_e this is (RT/F)·ln(θ_e/θ), and for 1 − θ ≪ θ_e it is −(RT/F)·ln(θ_e/(1−θ)): the potential diverges logarithmically and each end is approached asymptotically. Between 1 % and 99 % lithiation the tail changes U by at most 0.25 mV.
+
+**Ion fluxes: exponential fitting (Scharfetter–Gummel).** For ion i with charge zᵢ across a face between nodes a and b, a distance h apart, with Δ = zᵢF(Φ₂,b − Φ₂,a)/(RT):
+
+  Nᵢ = (ε/τ)(Dᵢ/h)·[B(Δ)·c_a − B(−Δ)·c_b],  B(x) = x/(eˣ − 1)
+
+This is exact for a constant flux in a constant field between the nodes, keeps concentrations positive, and stays accurate where migration dominates (the depleted regime). For |Δ| ≪ 1 it reduces to the centred scheme of section 5. D₊ and D₋ are those of section 3. The cation row uses N₊, and the current row uses i₂ = F(N₊ − N₋), so charge and salt are consistent by construction.
+
+**Background conductivity.** Where the salt is exhausted, no current can flow and Φ₂ is undefined. The solvent's own ionic conductivity κ_bg (`kappa_bg`, default 10⁻⁸ S/cm, about 10⁻⁶ of the 1 M electrolyte's) is added as an ohmic current −(ε/τ)κ_bg ∂Φ₂/∂x that carries no salt. It keeps Φ₂ defined there and changes nothing measurable elsewhere.
+
+**Newton.**
+- Each iteration's step is limited to |Δu| ≤ 1, |ΔΦ| ≤ 0.1 V and |Δs| ≤ 2. The exponentials make larger steps overshoot.
+- Convergence is judged on the physical variables: max(c/c_bulk·|Δu|, |ΔΦ|, θ(1−θ)|Δs|) ≤ 10⁻¹⁰, or stagnation at the round-off floor (below 10⁻⁷ and down by less than half since the previous iteration). Near a limit the log variables are ill-conditioned, and their round-off is physically irrelevant.
+- A raw update above 10³ means the step has no solution, for example a current that the remaining capacity cannot carry for the whole step. The driver then shortens the step (docs/protocol.md).
+
+## 11. Branch checklist (T2 verification)
 
 Every branch of `fillmat` (L980–L1670) is covered above:
 

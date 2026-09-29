@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+Corrected mode is reformulated so that physical limits are reached smoothly; faithful mode is unchanged (still byte-identical to the original).
+
+- **Corrected mode, log variables (model.md §10):** the unknowns are u = ln(c/c_bulk), Φ₁, Φ₂ and the particles' log-odds s = ln(θ/(1−θ)), so c > 0 and 0 < θ < 1 by construction. Ion fluxes use exponential fitting (Scharfetter–Gummel). The electrolyte can run out and particles can fill or empty without clipping. Salt and lithium are conserved to round-off. This supersedes the exchange-current regularization D-13.
+- **Corrected mode, OCP tails (D-16):** the LFP open-circuit potential has ideal-solution tails at empty and full (θ_e = 10⁻⁴), so particles approach either end asymptotically. They change U by at most 0.25 mV between 1 % and 99 % lithiation. Discharges change by at most 0.02 mV away from the ends and 0.55 mV on the final drop to the cutoff (1C). After a full charge the rest voltage relaxes to 3.76 V instead of 3.43 V.
+- **Input:** new `kappa_bg` in `&electrolyte` (default 10⁻⁸ S/cm), the solvent's background conductivity, which keeps Φ₂ defined where the salt is exhausted.
+- **Driver:** sub-steps halve down to 10⁻¹⁰ s and double again after each success; a time step gives up after 200 failures. When a step cannot be solved, the exit reason names the limit reached (`electrolyte_depleted`, `particles_full`, `particles_empty`), or `solver_fail` if none applies, and the last row reports the state at the start of that step.
+- Python: `lfp_model.logcore` and `lfp_model.logmodel.LogModel` (with `conc` and `cs` to convert a state to concentrations); `Result.final_state` in corrected mode now holds (u, Φ₁, Φ₂, s). The package's `__version__` was stale at 0.1.0 and is now 0.3.0.
+
 ## 0.2.0 (2026-09-28)
 
 Changes to inputs and to corrected-mode results; faithful mode is unchanged (still byte-identical to the original).

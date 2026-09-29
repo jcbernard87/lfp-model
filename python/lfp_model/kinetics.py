@@ -51,24 +51,6 @@ def ocp(p: Params, cs, c=None):
     return u
 
 
-THETA_REG = 1.0e-6   # corrected mode: below this lithiation (or vacancy) fraction, x^alpha is regularized
-
-
-def _power_reg(x, alpha, delta):
-    """x**alpha for x >= delta; below it the C1 quadratic delta**alpha*((2-alpha)u + (alpha-1)u**2), u = x/delta.
-
-    It keeps g(0) = 0 with a finite slope, so Newton's method stays well posed when a particle
-    empties or fills completely (deviation D-13). Returns (g, dg/dx).
-    """
-    x = np.asarray(x, dtype=float)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        u = x / delta
-        lo = x < delta
-        g = np.where(lo, delta ** alpha * ((2.0 - alpha) * u + (alpha - 1.0) * u * u), x ** alpha)
-        dg = np.where(lo, delta ** (alpha - 1.0) * ((2.0 - alpha) + 2.0 * (alpha - 1.0) * u), alpha * x ** (alpha - 1.0))
-    return g, dg
-
-
 def exchange_current(p: Params, c, cs):
     """i0 = F k c^aa (cs_max - cs)^aa cs^ac [A/cm2]."""
     if p.mode == "faithful":
@@ -79,13 +61,11 @@ def exchange_current(p: Params, c, cs):
 
 
 def exchange_current_and_slope(p: Params, c, cs):
-    """Corrected-mode i0 and d(i0)/dcs, with the solid-concentration powers regularized (D-13)."""
-    delta = THETA_REG * cs_max(p)
-    gv, dgv = _power_reg(cs_max(p) - cs, p.alpha_a, delta)
-    gs, dgs = _power_reg(cs, p.alpha_c, delta)
-    with np.errstate(invalid="ignore"):
+    """i0 and d(i0)/dcs in double precision (the c-form equations of docs/model.md section 5)."""
+    with np.errstate(invalid="ignore", divide="ignore"):
         pre = p.F * p.k_rxn * (c ** p.alpha_a)
-    return pre * gv * gs, pre * (gs * -dgv + gv * dgs)
+        gv, gs = (cs_max(p) - cs) ** p.alpha_a, cs ** p.alpha_c
+        return pre * gv * gs, pre * (-p.alpha_a * gs * (cs_max(p) - cs) ** (p.alpha_a - 1.0) + p.alpha_c * gv * cs ** (p.alpha_c - 1.0))
 
 
 def reaction_rate(p: Params, c, cs, phi1, phi2):

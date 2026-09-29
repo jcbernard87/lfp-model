@@ -8,18 +8,19 @@ The faithful mode (`mode = "faithful"`) reproduces the original program, includi
 |---|---|
 | D-1 | the Li-face row imposes (∂Φ₁/∂x)_new = 0 |
 | D-2 | every separator face uses ε_sep, for the ion fluxes and for the (inactive) separator solid phase |
-| D-3 | voltage cutoffs `V_min`/`V_max` are checked after every Newton sub-step; bound-preserving steps keep 0 < c_s < c_s,max |
+| D-3 | voltage cutoffs `V_min`/`V_max` are checked after every Newton sub-step; since v0.3.0 the unknowns ln(c/c_bulk) and ln(θ/(1−θ)) keep c > 0 and 0 < c_s < c_s,max by construction (model.md §10) |
 | D-4 | intended decimal values, double precision throughout, float-valued output timer (rows every 18 s) |
 | D-5 | the discarded Redlich–Kister sum is not ported |
 | D-6 | analytic reaction derivatives, including dU/dθ |
-| D-7 | each backward-Euler step is solved with Newton's method (scaled update ≤ 10⁻¹⁰), with the step limited to 0.1 V of potential change per iteration and sub-step halving on failure |
+| D-7 | each backward-Euler step is solved with Newton's method (update in the physical variables ≤ 10⁻¹⁰, or stagnated at the round-off floor), with limited steps per iteration and sub-step halving on failure (model.md §10) |
 | D-10 | the out-of-bounds read is not ported |
 | D-11 | the ionic-current residual includes the diffusion current |
 | D-9 | the active-material input is `f_AM`, the active fraction of the **solid phase**; the active volume fraction is f_AM·(1−ε) = 0.4 by default |
 | D-12 | the Li counter electrode is a symmetric Butler–Volmer interface, η = (RT/(αF))·asinh(I/(2i₀)) |
-| D-13 | below θ = 10⁻⁶ (or 1 − θ < 10⁻⁶), c_s^α is replaced by a C¹ quadratic with a finite slope; results above that threshold are unchanged |
+| D-13 | superseded in v0.3.0: the exchange current is evaluated in the log variables and needs no regularization |
 | D-14 | the OCP includes the electrolyte Nernst term (RT/F)·ln(c/c_bulk) (v0.2.0) |
 | D-15 | potentials are referenced to the lithium foil (0 V), so the cell voltage includes the foil's Nernst term (RT/F)·ln(c(0)/c_ref) (v0.2.0) |
+| D-16 | the OCP has ideal-solution tails at empty and full, so particles approach either end asymptotically (v0.3.0) |
 
 Status values: **candidate** (suspected from reading the source), **confirmed** (demonstrated by a test or run), **fixed**, **kept** (reviewed and left as is, with the reason).
 
@@ -36,9 +37,10 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 | D-9 | fixed (author's decision) | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
 | D-11 | fixed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
 | D-12 | fixed (author's decision) | The lithium-anode overpotential (RT/F)·ln(I/i₀) is singular at zero current and is half the Butler–Volmer slope for α = 0.5 |
-| D-13 | added (corrected mode) | The exchange current's c_s^α factors have an infinite slope at an empty or full particle, which makes Newton's method ill-posed |
+| D-13 | superseded (v0.3.0) | The exchange current's c_s^α factors have an infinite slope at an empty or full particle, which makes Newton's method ill-posed |
 | D-14 | fixed (author's decision, v0.2.0) | The OCP has no electrolyte-concentration (Nernst) term, although Φ₂ is the electrostatic potential of the Nernst–Planck equations |
 | D-15 | fixed (author's decision, v0.2.0) | The reported voltage has no reference electrode: it leaves out the lithium foil's Nernst term |
+| D-16 | fixed (author's decision, v0.3.0) | The OCP fit is bounded at θ = 0 and 1, so a particle can empty or fill completely in finite time |
 | D-10 | fixed (not ported) | The output routine reads `cprev` at index (SEP_NODE−NJ)/2 = −39 (out of bounds; value unused) |
 
 ## D-1. Li-foil face solid-potential row sign
@@ -137,6 +139,9 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
 
 ## D-13. Regularized exchange current near an empty or full particle (corrected mode)
 
+**Superseded in v0.3.0.** Corrected mode now solves for s = ln(θ/(1−θ)), in which ln i₀ is smooth with bounded derivatives for every θ (model.md §10). The regularization below applied in v0.1.0 and v0.2.0.
+
+
 - **What:** i₀ ∝ c_s^α_c (c_s,max − c_s)^α_a has d(i₀)/dc_s → ∞ as c_s → 0 or c_s,max. When particles near the collector empty completely during a charge, their Jacobian rows become dominated by that slope (condition number about 4 × 10¹⁶) and the linear solve fails.
 - **Change:** for x = c_s or c_s,max − c_s below δ = 10⁻⁶ c_s,max, x^α is replaced by δ^α[(2−α)u + (α−1)u²] with u = x/δ. This matches x^α and its slope at x = δ and gives g(0) = 0 with a finite slope. Results are unchanged whenever 10⁻⁶ < θ < 1 − 10⁻⁶. The original starts at θ₀ = 4.4 × 10⁻⁴.
 - **Related numerics (corrected mode):**
@@ -159,3 +164,13 @@ See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-i
 - **Fix in corrected mode:** potentials are referenced to the lithium foil metal (0 V). The foil sits at U_Li + η_Li on the solver's scale, so the cell voltage is V = Φ₁(collector) − U_Li − η_Li, and Φ₂ at the foil face is −(U_Li + η_Li). The solver keeps Φ₂ = 0 at the foil face as its gauge. The equations depend only on potential differences, so the foil-referenced potentials are the solved ones shifted by −(U_Li + η_Li), exactly (`simulate.foil_referenced`, tested in `test_potentials_are_gauge_invariant`). The foil potential cannot be imposed as the boundary condition itself: at rest the node-1 block becomes singular, because the foil then fixes the same electrochemical-potential combination as the cation-flux row. Constant-voltage steps hold this foil-referenced V. The output has a new column, Li_Nernst = U_Li in mV.
 - **Effect** (corrected mode): −0.1 mV (0.1C), −1.2 mV (1C) and −2.4 mV (2C), as salt builds up at the foil during discharge (the sign reverses on charge).
 - **Decision (author, 2026-09-28):** report the full cell voltage against the lithium foil.
+
+## D-16. Thermodynamic tails of the LFP open-circuit potential (v0.3.0)
+
+- **Where:** `OCP` (the arctangent fit of U(θ)) in corrected mode.
+- **What:** the fit is bounded at both ends: U_fit(0) and U_fit(1) are finite. The exchange current vanishes only as θ^α_c (or (1−θ)^α_a), so at a finite overpotential a particle reaches θ = 0 or 1 in finite time. A real insertion compound cannot be emptied or filled completely, because the configurational entropy of the last vacancies (or the last lithium) makes the potential diverge logarithmically. In the log variables the bounded fit shows up as particles emptying without limit during a charge until the step can no longer be solved: without the tail, the test cycle stopped with `particles_empty` before its charge cutoff.
+- **Fix in corrected mode:** U = U_fit(θ) + U_tail(s) + (RT/F)·ln(c/c_bulk), with U_tail(s) = (RT/F)·[ln(1 + e^(s_e − s)) − ln(1 + e^(s + s_e))], s = ln(θ/(1−θ)) and s_e = ln(θ_e/(1−θ_e)), θ_e = 10⁻⁴. For θ ≪ θ_e the tail is (RT/F)·ln(θ_e/θ), the ideal-solution term; symmetrically at the full end. The Jacobian includes dU_tail/ds = −(RT/F)·[σ(s_e − s) + σ(s + s_e)], with σ the logistic function. Faithful mode keeps the fit alone.
+- **Effect** (corrected mode, 24 µm cathode):
+  - The tail changes U by at most 0.25 mV between 1 % and 99 % lithiation. A 1C discharge changes by 0.02 mV near θ = 0.1 and 0.9, less than 0.003 mV mid-plateau, and up to 0.55 mV on the final drop to the cutoff. Capacity to 2.5 V decreases by 3 × 10⁻⁵ (1C) and 6 × 10⁻⁵ (2C) electron equivalents.
+  - The test cycle (2C discharge, 600 s rest, 1C charge to 4.0 V, CV to C/20, 600 s rest) takes the same steps as in v0.2.0. The rest after the discharge is up to 4.5 mV lower (the particles are nearly full), and the charge is up to 1.7 mV different. The final rest relaxes to 3.76 V instead of 3.43 V: the charged particles hold θ = 2 × 10⁻¹⁰, well below θ_e, where the tail sets the open-circuit potential.
+- **Decision (author, 2026-09-29):** add the thermodynamic tail in corrected mode.
