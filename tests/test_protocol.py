@@ -5,6 +5,7 @@ import pytest
 from lfp_model import kinetics
 from lfp_model.params import Params
 from lfp_model.protocol import Step, parse
+from lfp_model.logmodel import LogModel
 from lfp_model.simulate import run
 
 CYCLE = "cc C=2 Vmin=2.5; rest t=600; cc C=-1 Vmax=4.0; cv V=4.0 Imin=0.05; rest t=600"
@@ -59,6 +60,6 @@ def test_cycle_conserves_lithium(cycle):
 
 def test_rest_relaxes_to_ocp(cycle):
     p, r = cycle
-    c = r.final_state
-    u = kinetics.ocp(p, c[p.sep_node:-1, 3], c[p.sep_node:-1, 0])
+    c = r.final_state                                          # corrected mode: (u, phi1, phi2, s)
+    u = LogModel(p).kin.ocp(c[p.sep_node:-1, 0], c[p.sep_node:-1, 3])
     np.testing.assert_allclose(c[p.sep_node:-1, 1] - c[p.sep_node:-1, 2], u, atol=2e-3)

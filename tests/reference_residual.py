@@ -92,3 +92,70 @@ def faces(p: Params, c: np.ndarray):
     N_minus = -e * d_an / tau * g[:, 0] - e * p.z_minus * d_an / rt / tau * F * cf * g[:, 2]
     i2 = F * (p.z_plus * N_plus + p.z_minus * N_minus)
     return N_plus, i2, N_minus
+
+
+# ------------------------------------------------------------------ corrected mode (log variables)
+
+def _bern(x):
+    return 1.0 - x / 2.0 + x * x / 12.0 if abs(x) < 1e-3 else x / np.expm1(x)
+
+
+def to_physical(p: Params, x: np.ndarray) -> np.ndarray:
+    """A corrected-mode state (u, phi1, phi2, s) as (c, phi1, phi2, cs)."""
+    out = x.copy()
+    out[:, 0] = p.c_bulk * np.exp(x[:, 0])
+    out[:, 3] = kinetics.cs_max(p) / (1.0 + np.exp(-x[:, 3]))
+    return out
+
+
+def sg_residual(p: Params, x: np.ndarray, x_old: np.ndarray, dt: float, I: float) -> np.ndarray:
+    """The corrected model's residual written node by node from docs/model.md section 10.
+
+    Scharfetter-Gummel ion fluxes, the background conductivity, the package's c-form kinetics.
+    Same rows, signs and scaling as lfp_model.logcore.Electrode.
+    """
+    m = make_mesh(p)
+    nj, s, dx = m.nj, m.s, m.dx
+    F, f = p.F, p.F / (p.R * p.T)
+    t_an = 1.0 - p.t_plus
+    Dp = p.D * (1.0 + t_an / p.t_plus) / (2.0 * t_an / p.t_plus)
+    Dm = Dp * t_an / p.t_plus
+    y, yo = to_physical(p, x), to_physical(p, x_old)
+    c, cs, co, cso = y[:, 0], y[:, 3], yo[:, 0], yo[:, 3]
+    Np, i1, i2 = np.zeros(nj - 1), np.zeros(nj - 1), np.zeros(nj - 1)
+    for k in range(nj - 1):
+        sep = k < s
+        eps, tau = (p.eps_sep, p.tau_sep) if sep else (p.eps, p.tortuosity)
+        h = (dx[k] + dx[k + 1]) / 2.0
+        g = eps / tau / h
+        d = f * (x[k + 1, 2] - x[k, 2])
+        Np[k] = g * Dp * (_bern(d) * c[k] - _bern(-d) * c[k + 1])
+        Nm = g * Dm * (_bern(-d) * c[k] - _bern(d) * c[k + 1])
+        i2[k] = F * (Np[k] - Nm) - g * p.kappa_bg * (x[k + 1, 2] - x[k, 2])
+        i1[k] = -(1.0 - (p.eps_sep if sep else p.eps)) * p.sigma * (x[k + 1, 1] - x[k, 1]) / h
+    # corrected-mode kinetics with the OCP's thermodynamic tails (D-16), written independently
+    th = cs / kinetics.cs_max(p)
+    s_ = np.log(th / (1.0 - th))
+    se = np.log(1e-4 / (1.0 - 1e-4))
+    rtf = p.R * p.T / p.F
+    tail = rtf * (np.logaddexp(0.0, se - s_) - np.logaddexp(0.0, s_ + se))
+    eta = x[:, 1] - x[:, 2] - (kinetics.ocp(p, cs, c) + tail)
+    i0 = kinetics.exchange_current(p, c, cs)
+    i_n = i0 * (np.exp(p.alpha_a * f * eta) - np.exp(-p.alpha_c * f * eta))
+    a = p.spec_a
+    R = np.zeros_like(x)
+    R[0] = [Np[0] - I / F, x[1, 1] - x[0, 1], x[0, 2], x[0, 3] - x_old[0, 3]]
+    for j in range(1, nj - 1):
+        eps = p.eps_sep if j < s else p.eps
+        R[j, 0] = eps * dx[j] * (c[j] - co[j]) / dt + Np[j] - Np[j - 1]
+        R[j, 1] = i1[j] - i1[j - 1]
+        R[j, 2] = i2[j] - i2[j - 1]
+        R[j, 3] = x[j, 3] - x_old[j, 3]
+    R[-1, :3] = [-Np[-1], i1[-1] - I, i2[-1]]
+    R[-1, 3] = 0.0
+    for j in range(s, nj):                    # particles, with their reaction in the electrode rows
+        R[j, 0] -= a * i_n[j] * dx[j] / F
+        R[j, 1] += a * i_n[j] * dx[j]
+        R[j, 2] -= a * i_n[j] * dx[j]
+        R[j, 3] = p.vf_AM * (cs[j] - cso[j]) / dt + a * i_n[j] / F
+    return R

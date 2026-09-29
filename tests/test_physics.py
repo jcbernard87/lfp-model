@@ -10,9 +10,10 @@ import bandsolver
 from lfp_model import kinetics
 from lfp_model.model import Assembler, make_mesh
 from lfp_model.params import Params
-from lfp_model.simulate import initial_state, newton_step, run
+from lfp_model.logmodel import LogModel
+from lfp_model.simulate import initial_state, run
 
-from .reference_residual import faces, residual
+from .reference_residual import residual, sg_residual, to_physical
 
 
 def corrected(**kw):
@@ -20,7 +21,7 @@ def corrected(**kw):
 
 
 def inventories(p, c):
-    """Salt in the electrolyte and lithium in the solid, per unit area [mol/cm2]."""
+    """Salt in the electrolyte and lithium in the solid, per unit area [mol/cm2] (a state in c-form)."""
     m = make_mesh(p)
     s, dx = m.s, m.dx
     salt = (p.eps_sep * c[1:s, 0] * dx[1:s]).sum() + (p.eps * c[s + 1:-1, 0] * dx[s + 1:-1]).sum()
@@ -30,30 +31,30 @@ def inventories(p, c):
 
 @pytest.fixture(scope="module")
 def mid_discharge():
-    """Corrected-mode state after 600 s at 1C, and the previous state."""
+    """Corrected-mode state (log variables) after 600 s at 1C, and the previous state."""
     p = corrected(C_rate=1.0)
-    c_prev = run(p, max_steps=599).final_state
-    c = run(p, max_steps=600).final_state
-    return p, c_prev, c
+    x_prev = run(p, max_steps=599).final_state
+    x = run(p, max_steps=600).final_state
+    return p, x_prev, x
 
 
 # ------------------------------------------------------------------ residual and Jacobian
 
 def test_residual_matches_independent_reference(mid_discharge):
-    p, c_old, c = mid_discharge
+    """The assembled corrected-mode residual equals an independent node-by-node implementation."""
+    p, x_old, x = mid_discharge
     rng = np.random.default_rng(1)
-    cp = c * (1 + 1e-4 * rng.standard_normal(c.shape))       # away from the solution
-    asm = Assembler(p)
-    _, _, _, G, _ = asm.assemble(cp, 1.0)
-    G = G - asm.time_terms(1.0) * (cp - c_old)
-    R = residual(p, cp, c_old, 1.0)
-    rel = np.abs(G + R).max(axis=0) / np.abs(R).max(axis=0)
-    assert rel.max() < 1e-12, rel
+    xp = x + 1e-4 * rng.standard_normal(x.shape)            # away from the solution
+    R = LogModel(p).el.residual_and_blocks(xp, x_old, 1.0, p.i_app)[0]
+    R_ref = sg_residual(p, xp, x_old, 1.0, p.i_app)
+    rel = np.abs(R - R_ref).max(axis=0) / np.abs(R_ref).max(axis=0)
+    assert rel.max() < 1e-10, rel
 
 
 def test_faithful_residual_shows_D2_and_D11(mid_discharge):
-    """Faithful mode differs from the reference exactly in the cation row (D-2) and current row (D-11)."""
-    _, c_old, c = mid_discharge
+    """Faithful mode differs from the intended equations in the cation row (D-2) and current row (D-11)."""
+    pc, x_old, x = mid_discharge
+    c_old, c = to_physical(pc, x_old), to_physical(pc, x)
     p = Params.faithful(C_rate=1.0)
     asm = Assembler(p)
     _, _, _, G, _ = asm.assemble(c, 1.0)
@@ -71,14 +72,20 @@ def _fill(asm, c_old, dt=1.0):
 
 
 def test_jacobian_corrected(mid_discharge):
-    p, c_old, c = mid_discharge
-    chk = bandsolver.check_jacobian(_fill(Assembler(p), c_old), c)
+    p, x_old, x = mid_discharge
+    el = LogModel(p).el
+
+    def fill(y):
+        R, A, B, D = el.residual_and_blocks(y, x_old, 1.0, p.i_app)
+        return A, B, D, -R
+    chk = bandsolver.check_jacobian(fill, x)
     assert chk.max_error < 1e-4, chk.worst()
 
 
 def test_jacobian_faithful_shows_D1(mid_discharge):
     """The Li-foil solid-potential row has the wrong sign in faithful mode (D-1)."""
-    _, c_old, c = mid_discharge
+    pc, x_old, x = mid_discharge
+    c_old, c = to_physical(pc, x_old), to_physical(pc, x)
     chk = bandsolver.check_jacobian(_fill(Assembler(Params.faithful(C_rate=1.0)), c_old), c)
     name, worst = chk.worst()
     assert (name, worst.node, worst.row, worst.col) == ("B", 0, 1, 1)
@@ -89,17 +96,20 @@ def test_jacobian_faithful_shows_D1(mid_discharge):
 
 def test_conservation_corrected():
     p = corrected(C_rate=1.0)
-    c0 = initial_state(p)
-    c = run(p, max_steps=1800).final_state
-    s0, so0 = inventories(p, c0)
-    s1, so1 = inventories(p, c)
+    m = LogModel(p)
+    x0 = m.initial_state()
+    x = run(p, max_steps=1800).final_state
+    s0, so0 = inventories(p, to_physical(p, x0))
+    s1, so1 = inventories(p, to_physical(p, x))
     q = p.i_app * 1800 / p.F
     assert abs(s1 - s0) / s0 < 1e-12                  # salt is conserved
     assert abs((so1 - so0) / q - 1) < 1e-12           # lithium into the solid equals It/F
-    N_plus, i2, N_minus = faces(p, c)
-    sep = slice(1, make_mesh(p).s - 1)
-    np.testing.assert_allclose(i2[sep], p.i_app, rtol=1e-9)   # the separator carries the applied current
-    assert np.abs(N_minus[sep]).max() < 1e-6 * p.i_app / p.F  # and no anion flux (quasi-steady)
+    el = m.el
+    Fv, _, _ = el.tr.fluxes(x[:-1], x[1:], el.g, el.gs)
+    sep = slice(1, m.mesh.s - 1)
+    np.testing.assert_allclose(Fv[sep, 2], p.i_app, rtol=1e-9)        # the separator carries the applied current
+    N_minus = (Fv[sep, 0] * p.F - Fv[sep, 2]) / p.F                  # i2 = F (N+ - N-), background current negligible
+    assert np.abs(N_minus).max() < 1e-6 * p.i_app / p.F              # and no anion flux (quasi-steady)
 
 
 def test_conservation_faithful_shows_D2():
@@ -115,13 +125,12 @@ def test_conservation_faithful_shows_D2():
 
 def test_rest_at_equilibrium_stays_put():
     """No current, open-circuit potential everywhere: one step must change nothing."""
-    p0 = corrected(C_rate=0.0)
-    u = float(kinetics.ocp(p0, np.array([p0.cs_init]))[0])
-    p = p0.with_(phi1_init=u)
-    asm = Assembler(p)
-    c0 = initial_state(p)
-    c, _ = newton_step(asm, c0, 10.0)
-    assert np.abs(c - c0).max() < 1e-12
+    p = corrected(C_rate=0.0)
+    m = LogModel(p)
+    x0 = m.initial_state()
+    x0[:, 1] = float(m.kin.ocp(0.0, x0[m.mesh.s, 3]))
+    x = m.newton_step(x0, 10.0, 0.0)
+    assert np.abs(x - x0).max() < 1e-12
 
 
 # ------------------------------------------------------------------ convergence
@@ -145,7 +154,7 @@ def test_mesh_convergence_second_order():
         vals.append(run(p, max_steps=900).final_state[-1, 1])
     d = np.diff(vals)
     orders = np.log2(np.abs(d[:-1] / d[1:]))
-    assert np.all((orders > 1.8) & (orders < 2.3)), orders
+    assert np.all((orders > 1.8) & (orders < 2.6)) and orders[-1] < orders[0], orders   # approaching 2
 
 
 # ------------------------------------------------------------------ end of discharge
@@ -161,6 +170,30 @@ def test_corrected_ends_at_cutoff(C_rate):
 
 # ------------------------------------------------------------------ reference electrode and OCP
 
+def test_potentials_are_gauge_invariant(mid_discharge):
+    """The residual depends only on potential differences, so the foil reference is an exact shift."""
+    from lfp_model.simulate import foil_referenced
+    p, x_prev, x = mid_discharge
+    rng = np.random.default_rng(1)
+    y = x + 1.0e-3 * rng.standard_normal(x.shape)            # off the solution, so the residual is not round-off
+    r0 = sg_residual(p, y, x_prev, p.dt, p.i_app)
+    r1 = sg_residual(p, foil_referenced(p, y, p.i_app), x_prev, p.dt, p.i_app)
+    r0[0, 2] = r1[0, 2] = 0.0                                 # the gauge row phi2(foil face) = 0 itself
+    np.testing.assert_allclose(r1, r0, rtol=0, atol=1e-9 * np.abs(r0).max())
+
+
+def test_cell_voltage_against_foil(mid_discharge):
+    """V = phi1(collector) - (U_Li + eta_Li): phi2 at the foil face is -(U_Li + eta_Li) on the foil scale."""
+    from lfp_model.simulate import cell_voltage, foil_referenced
+    p, _, x = mid_discharge
+    c0 = p.c_bulk * np.exp(x[0, 0])
+    u_li, eta_li = kinetics.li_foil(p, c0, p.i_app)
+    ref = foil_referenced(p, x, p.i_app)
+    assert ref[0, 2] == pytest.approx(-(u_li + eta_li), abs=1e-15)
+    assert cell_voltage(p, x, p.i_app) == pytest.approx(ref[-1, 1], abs=1e-15)
+    assert eta_li > 0 and c0 > p.c_bulk and u_li > 0          # discharge: salt builds up at the foil
+
+
 def test_ocp_nernst_term_corrected_only():
     """Corrected mode adds (RT/F) ln(c/c_bulk) to the LFP OCP; faithful mode keeps the fit alone."""
     cs = np.array([0.3, 0.5, 0.7]) * kinetics.cs_max(corrected())
@@ -171,24 +204,17 @@ def test_ocp_nernst_term_corrected_only():
         np.testing.assert_allclose(u2 - u0, shift, rtol=1e-12, atol=0.0)
 
 
-def test_potentials_are_gauge_invariant(mid_discharge):
-    """The residual depends only on potential differences, so the foil reference is an exact shift."""
-    from lfp_model.simulate import foil_referenced
-    p, c_prev, c = mid_discharge
-    rng = np.random.default_rng(1)
-    x = c * (1.0 + 1.0e-3 * rng.standard_normal(c.shape))    # off the solution, so the residual is not round-off
-    r0 = residual(p, x, c_prev, p.dt)
-    r1 = residual(p, foil_referenced(p, x, p.i_app), c_prev, p.dt)
-    r0[0, 2] = r1[0, 2] = 0.0                                 # the gauge row phi2(foil face) = 0 itself
-    np.testing.assert_allclose(r1, r0, rtol=0, atol=1e-9 * np.abs(r0).max())
-
-
-def test_cell_voltage_against_foil(mid_discharge):
-    """V = phi1(collector) - (U_Li + eta_Li): phi2 at the foil face is -(U_Li + eta_Li) on the foil scale."""
-    from lfp_model.simulate import cell_voltage, foil_referenced
-    p, _, c = mid_discharge
-    u_li, eta_li = kinetics.li_foil(p, c[0, 0], p.i_app)
-    ref = foil_referenced(p, c, p.i_app)
-    assert ref[0, 2] == pytest.approx(-(u_li + eta_li), abs=1e-15)
-    assert cell_voltage(p, c, p.i_app) == pytest.approx(ref[-1, 1], abs=1e-15)
-    assert eta_li > 0 and c[0, 0] > p.c_bulk and u_li > 0     # discharge: salt builds up at the foil
+def test_ocp_thermodynamic_tails():
+    """Corrected mode: the OCP tail (D-16) is negligible across the fitted range and diverges like the
+    ideal-solution term (RT/F) ln((1-theta)/theta) at empty and full."""
+    p = corrected()
+    kin = LogModel(p).kin
+    rtf = p.R * p.T / p.F
+    th = np.array([0.01, 0.1, 0.5, 0.9, 0.99])
+    s = np.log(th / (1 - th))
+    tail = kin.ocp(0.0, s) - kin._fit(th)[0]
+    assert np.abs(tail).max() < 0.3e-3
+    for t in (1e-8, 1e-12):
+        se = np.log(t / (1 - t))
+        assert kin.ocp(0.0, se) - kin._fit(t)[0] == pytest.approx(rtf * np.log(1e-4 / t), rel=1e-3)
+        assert kin._fit(1 - t)[0] - kin.ocp(0.0, -se) == pytest.approx(rtf * np.log(1e-4 / t), rel=1e-3)

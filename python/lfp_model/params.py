@@ -67,6 +67,7 @@ class Params:
     fd_step: float = 1.0e-6        # absolute step of the finite-difference reaction derivatives
     newton_tol: float = 1.0e-10    # corrected mode: scaled update tolerance per time step (D-7)
     newton_max_iter: int = 25
+    kappa_bg: float = 1.0e-8       # corrected mode: background (solvent) ionic conductivity [S/cm]
     # --- protocol and output (corrected mode; docs/protocol.md) ---
     steps: str = ""                # empty: classic discharge at C_rate
     cycles: int = 1
