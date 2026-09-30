@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(bandsolver
   GIT_REPOSITORY https://github.com/jcbernard87/bandsolver.git
-  GIT_TAG v0.1.1)
+  GIT_TAG v0.1.2)
 set(BANDSOLVER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BANDSOLVER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(bandsolver)

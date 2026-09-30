@@ -23,7 +23,7 @@ jobs:
       - name: Install bandsolver and this package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "bandsolver @ git+https://github.com/jcbernard87/bandsolver@v0.1.1"
+          python -m pip install "bandsolver @ git+https://github.com/jcbernard87/bandsolver@v0.1.2"
           python -m pip install -e ".[test,notebooks]" nbconvert ipykernel
       - name: Build the Fortran and C++ programs
         run: |
