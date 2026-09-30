@@ -212,11 +212,16 @@ def _row(p: Params, t: float, c: np.ndarray, mAhg: float, I: float, step: int):
 
 
 class Stepper:
-    """The corrected model (log variables) as a stepper for lfp_model.driver."""
+    """The corrected model (log variables; uniform particles or crystals) as a stepper for lfp_model.driver."""
 
     def __init__(self, p: Params, *, backend: str):
-        from .logmodel import LogModel
-        self.p, self.model, self.backend = p, LogModel(p), backend
+        if p.particle_model == "crystal":
+            from .crystal import CrystalModel
+            self.model = CrystalModel(p)
+        else:
+            from .logmodel import LogModel
+            self.model = LogModel(p)
+        self.p, self.backend = p, backend
 
     def initial_state(self):
         return self.model.initial_state()
@@ -225,16 +230,19 @@ class Stepper:
         return self.model.newton_step(c, h, I, backend=self.backend)
 
     def voltage(self, c, I):
-        return cell_voltage(self.p, c, I)
+        return cell_voltage(self.p, self.model.electrode(c), I)
 
     def row(self, t, c, mAhg, I, k):
-        return _row(self.p, t, c, mAhg, I, k)
+        return _row(self.p, t, self.model.electrode(c), mAhg, I, k)
 
-    @staticmethod
-    def finite(c):
+    def finite(self, c):
+        if hasattr(c, "xc"):
+            return bool(np.all(np.isfinite(c.x)) and np.all(np.isfinite(c.xc)))
         return bool(np.all(np.isfinite(c)))
 
     def limit_reason(self, x):
+        if hasattr(self.model, "limit_reason"):
+            return self.model.limit_reason(x)
         s = self.model.mesh.s
         th = self.model.cs(x)[s:] / self.model.cs_max
         return limit_reason(float(self.model.conc(x).min()), self.p.c_bulk, float(th.min()), float(th.max()))

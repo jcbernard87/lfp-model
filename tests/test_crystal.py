@@ -15,7 +15,7 @@ def _run_flux(k, nc, J=0.05, th0=0.2, dt=0.05, t_end=2.0):
         old = xc.copy()
         for _ in range(30):
             R, B, Dn, An = diffusion_rows(cm, 1.0, 1.0, xc, old, dt)
-            R[:, -1] += J                       # surface balance R_surf - i/F; an inward flux J is i/F = -J
+            R[:, -1] -= cm.A_R * J               # the caller adds the outward surface flux A_R i/F; inward J: i/F = -J
             A3 = An[0][:, None, None]; B3 = B[0][:, None, None]; D3 = Dn[0][:, None, None]
             dx = bandsolver.solve(A3, B3, D3, -R[0][:, None])[:, 0]
             xc = xc + dx[None, :]
@@ -29,8 +29,7 @@ def _run_flux(k, nc, J=0.05, th0=0.2, dt=0.05, t_end=2.0):
 @pytest.mark.parametrize("k", [0, 1, 2])
 def test_constant_flux_matches_analytic(k):
     cm, th, exact = _run_flux(k, 41)
-    inner = slice(1, None)                      # node 0 copies node 1 (not at r = 0)
-    assert np.abs(th[inner] - exact[inner]).max() < 2e-4
+    assert np.abs(th - exact).max() < 2e-4
     mean = (cm.V * th).sum() / cm.Vtot
     assert mean == pytest.approx(0.2 + (k + 1) * 0.05 * 2.0, abs=1e-12)    # lithium balance, exact
 
@@ -38,10 +37,10 @@ def test_constant_flux_matches_analytic(k):
 @pytest.mark.parametrize("k", [0, 2])
 def test_crystal_mesh_second_order(k):
     errs = []
-    for nc in (12, 22, 42):
+    for nc in (11, 21, 41):
         _, th, exact = _run_flux(k, nc)
         errs.append(abs(th[-1] - exact[-1]))    # surface value
-    orders = np.log2(np.array(errs[:-1]) / np.array(errs[1:]))   # interior cells 10, 20, 40: h halves
+    orders = np.log2(np.array(errs[:-1]) / np.array(errs[1:]))   # h = R/10, R/20, R/40
     assert np.all(orders > 1.8), orders
 
 
@@ -131,13 +130,84 @@ def test_condensed_jacobian_matches_fd():
     assert (np.abs(J - Jfd) / scale).max() < 1e-5
 
 
-@pytest.mark.skip(reason="needs the protocol integration of Task 4")
 @pytest.mark.parametrize("D_c", [1e-9, 1e-6])
 def test_uniform_limit(D_c):
     """Fast solid diffusion: the crystal model's voltage approaches the uniform-particle model's."""
     from lfp_model.simulate import run
     a_u = run(Params(mode="corrected", C_rate=1.0), max_steps=1800).array
-    a_c = run(crystal(C_rate=1.0, D_c=D_c), max_steps=1800).array
+    r_c = run(crystal(C_rate=1.0, D_c=D_c), max_steps=1800)
+    assert isinstance(r_c.final_state, CrystalState)
+    a_c = r_c.array
     n = min(len(a_u), len(a_c))
     err = np.abs(a_c[:n, 1] - a_u[:n, 1]).max()
     assert err < (2e-3 if D_c == 1e-9 else 5e-6), err
+
+
+from lfp_model.simulate import run
+
+CYCLE = "cc C=2 Vmin=2.5; rest t=600; cc C=-1 Vmax=4.0; cv V=4.0 Imin=0.05; rest t=600"
+
+
+def test_crystal_discharge_ends_at_cutoff():
+    r = run(crystal(C_rate=1.0))
+    assert isinstance(r.final_state, CrystalState)            # the crystal model actually ran
+    assert r.exit_reason == "cutoff_low"
+    assert r.array[-1, 1] <= 2.5 and r.array[-2, 1] > 2.5
+
+
+def test_capacity_falls_with_slower_diffusion():
+    caps = [run(crystal(C_rate=2.0, D_c=D)).array[-1, 2] for D in (1e-12, 8e-14, 1e-14)]
+    assert caps[0] > caps[1] > caps[2]
+
+
+def test_tiny_diffusivity_still_reaches_cutoff():
+    r = run(crystal(C_rate=1.0, D_c=1e-17))
+    assert isinstance(r.final_state, CrystalState)
+    assert r.exit_reason == "cutoff_low"
+
+
+def test_crystal_cycle_completes():
+    """The CV hold drains the crystal surfaces to theta ~ 1e-6, where a linearized log-odds update is
+    huge; Newton must still converge (divergence is judged on the electrode unknowns only).
+    D_c = 1e-12 keeps the CV hold short (the default D_c also completes, in ~3 min)."""
+    r = run(crystal(steps=CYCLE, D_c=1e-12))
+    assert isinstance(r.final_state, CrystalState)
+    assert r.exit_reason == "end_of_protocol"
+
+
+def test_rest_relaxes_monotonically():
+    """After a 2C partial discharge the crystal profiles flatten at I = 0; V moves monotonically
+    toward the OCP of the mean theta."""
+    p = crystal(steps="cc C=2 t=900; rest t=1800")
+    r = run(p)
+    a = r.array
+    v = a[a[:, 7] == 2][:, 1]
+    dv = np.diff(v)
+    assert np.all(dv >= -1e-9) or np.all(dv <= 1e-9)
+    m = CrystalModel(p)
+    st = r.final_state
+    th_mean = m.cs_mean(st) / m.cs_max
+    s_mean = np.log(th_mean / (1 - th_mean))
+    u_ocp = m.kin.ocp(st.x[m.nodes, 0], s_mean)
+    np.testing.assert_allclose(st.x[m.nodes, 1] - st.x[m.nodes, 2], u_ocp, atol=2e-3)
+
+
+def test_crystal_time_first_order():
+    vals = []
+    for dt in (1.0, 0.5, 0.25, 0.125):
+        p = crystal(C_rate=2.0, n_steps=int(36000 / dt), newton_tol=1e-13)
+        vals.append(run(p, max_steps=int(8 / dt)).final_state.x[0, 0])
+    d = np.diff(vals)
+    orders = np.log2(np.abs(d[:-1] / d[1:]))
+    assert np.all((orders > 0.9) & (orders < 1.1)), orders
+
+
+def test_crystal_electrode_mesh_second_order():
+    vals = []
+    for sep, nj in ((7, 26), (12, 51), (22, 101), (42, 201)):
+        vals.append(run(crystal(C_rate=2.0, sep_node=sep, nj=nj), max_steps=900).final_state.x[-1, 1])
+    d = np.diff(vals)
+    orders = np.log2(np.abs(d[:-1] / d[1:]))
+    assert np.all((orders > 1.8) & (orders < 2.6)), orders
+
+

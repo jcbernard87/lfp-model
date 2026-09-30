@@ -1,8 +1,7 @@
 """Crystal scale: solid diffusion in the crystals, coupled to the electrode (docs/model.md section 12).
 
 Corrected mode with particle_model = 'crystal'. Each interior cathode node carries one crystal
-(slab, cylinder or sphere, k = 0, 1, 2), discretized by finite volumes in r with zero-volume
-center and surface nodes. The unknown at every crystal node is the log-odds s = ln(theta/(1-theta)),
+(slab, cylinder or sphere, k = 0, 1, 2), discretized by vertex-centred finite volumes in r. The unknown at every crystal node is the log-odds s = ln(theta/(1-theta)),
 and the flux is Fick's law in theta with a constant D_c. Each Newton iteration condenses the
 crystals into the electrode's diagonal blocks (the nmc111-model agglomerate pattern).
 """
@@ -24,48 +23,40 @@ from .params import CRYSTAL_SHAPES, Params
 
 
 class CrystalMesh:
+    """Vertex-centred finite volumes in r: nodes at r_j = j h (center and surface included), each owning
+    the control volume [r_j - h/2, r_j + h/2] within [0, R]. Every node stores lithium, so the surface
+    can take up or give off lithium as it fills or empties, as in the continuum."""
+
     def __init__(self, R: float, nc: int, k: int):
-        h = R / float(nc - 2)
-        j = np.arange(nc)
-        r = np.zeros(nc)
-        r[1:nc - 1] = h * j[1:nc - 1] - h / 2.0
-        r[nc - 1] = R
-        rW, rE = np.zeros(nc), np.zeros(nc)
-        rW[1:nc - 1] = h * (j[1:nc - 1] - 1)
-        rE[1:nc - 1] = h * j[1:nc - 1]
-        self.r, self.k, self.R = r, k, R
-        self.V = (rE ** (k + 1) - rW ** (k + 1)) / (k + 1)
-        rf = h * np.arange(nc - 1)
-        rf[-1] = R
-        self.A = rf ** k                      # k = 0: 1 everywhere (face 0 is never used: symmetry)
-        self.d = np.full(nc - 1, h)
-        self.d[0] = self.d[-1] = h / 2.0
+        h = R / float(nc - 1)
+        self.r = h * np.arange(nc)
+        self.r[-1] = R
+        rW = np.maximum(self.r - h / 2.0, 0.0)
+        rE = np.minimum(self.r + h / 2.0, R)
+        self.k, self.R, self.h = k, R, h
+        self.V = (rE ** (k + 1) - rW ** (k + 1)) / (k + 1)   # node volumes (per unit geometric constant)
+        self.A = (h * (np.arange(nc - 1) + 0.5)) ** k          # face areas between nodes f and f+1
+        self.A_R = R ** k                                      # surface area
         self.Vtot = R ** (k + 1) / (k + 1)
 
 
 def diffusion_rows(cm: CrystalMesh, D: float, cs_max: float, xc, xcold, dt):
     """Residual and tridiagonal dR/ds (sub An, diagonal B, super Dn) of the crystal rows, without the
-    reaction. Every array is (nl, nc). The surface row is the outward flux per area; the caller
-    subtracts i/F."""
+    reaction. Every array is (nl, nc). Row j is storage plus the net outward diffusive flux of its
+    control volume; the caller adds the flux out through the surface, A_R i/F, to the last row."""
     th, thold = sigmoid(xc), sigmoid(xcold)
     dth = th * sigmoid(-xc)
-    g = D * cs_max * cm.A / cm.d                           # (nc-1,)
-    Jf = -g * (th[:, 1:] - th[:, :-1])                     # outward flux through each face
-    R = np.zeros_like(xc); B = np.zeros_like(xc); An = np.zeros_like(xc); Dn = np.zeros_like(xc)
-    R[:, 0] = xc[:, 0] - xc[:, 1]
-    B[:, 0] = 1.0; Dn[:, 0] = -1.0
-    ji = np.arange(1, xc.shape[1] - 1)
-    V = cm.V[ji]
-    R[:, ji] = cs_max * V * (th[:, ji] - thold[:, ji]) / dt + Jf[:, ji]
-    R[:, ji[1:]] -= Jf[:, ji[1:] - 1]                       # J_0 = 0: no flux through the center face
-    B[:, ji] = cs_max * V * dth[:, ji] / dt + g[ji] * dth[:, ji]
-    Dn[:, ji] = -g[ji] * dth[:, ji + 1]
-    B[:, ji[1:]] += g[ji[1:] - 1] * dth[:, ji[1:]]
-    An[:, ji[1:]] = -g[ji[1:] - 1] * dth[:, ji[1:] - 1]
-    n = xc.shape[1] - 1
-    R[:, n] = Jf[:, n - 1] / cm.A[n - 1]
-    B[:, n] = -D * cs_max * dth[:, n] / cm.d[n - 1]
-    An[:, n] = D * cs_max * dth[:, n - 1] / cm.d[n - 1]
+    g = D * cs_max * cm.A / cm.h                           # (nc-1,)
+    Jf = -g * (th[:, 1:] - th[:, :-1])                     # outward flux through each internal face
+    R = cs_max * cm.V * (th - thold) / dt
+    R[:, :-1] += Jf
+    R[:, 1:] -= Jf
+    B = cs_max * cm.V * dth / dt
+    B[:, :-1] += g * dth[:, :-1]
+    B[:, 1:] += g * dth[:, 1:]
+    Dn = np.zeros_like(xc); An = np.zeros_like(xc)
+    Dn[:, :-1] = -g * dth[:, 1:]
+    An[:, 1:] = -g * dth[:, :-1]
     return R, B, Dn, An
 
 
@@ -144,10 +135,11 @@ class CrystalModel:
         Re[self.nodes, :3] += (w * i)[:, None] * sgn
         Be[self.nodes, :3, :3] += (w[:, None, None] * sgn[None, :, None]) * di[:, None, :3]
         Rc, Bc, Dc, Ac = diffusion_rows(self.cm, p.D_c, self.cs_max, st.xc, old.xc, dt)
-        Rc[:, -1] -= i / F
-        Bc[:, -1] -= di[:, S] / F
+        AR = self.cm.A_R
+        Rc[:, -1] += AR * i / F                                 # flux out through the surface
+        Bc[:, -1] += AR * di[:, S] / F
         g = (w * di[:, S])[:, None] * sgn
-        Jce = -di[:, :3] / F
+        Jce = AR * di[:, :3] / F
         return Re, Ae, Be, De, Rc, Ac, Bc, Dc, g, Jce
 
     def residuals(self, st, old, dt, I):
@@ -217,7 +209,9 @@ class CrystalModel:
             dxc4 = np.zeros((nl, nc, N))
             dxc4[..., S] = dxc
             lam = bounded((dxe, dxc4))
-            raw = max(float(np.max(np.abs(dxe))), float(np.max(np.abs(dxc))))
+            # divergence is judged on the electrode unknowns: a large linearized update of the crystals'
+            # log-odds only reflects the log scale near theta = 0 or 1 (it is damped by `bounded`)
+            raw = float(np.max(np.abs(dxe)))
             st = CrystalState(st.x + lam * dxe, st.xc + lam * dxc)
             th = sigmoid(st.xc)
             upd = max(physical_update(st.x, dxe, frozen_s=True),
@@ -232,5 +226,5 @@ class CrystalModel:
         raise SolverFailure("Newton did not converge")
 
     def limit_reason(self, st: CrystalState):
-        th = sigmoid(st.xc)
+        th = sigmoid(st.xc[:, -1])                              # the surfaces, where the reaction is
         return limit_reason(float(self.conc(st).min()), self.p.c_bulk, float(th.min()), float(th.max()))
