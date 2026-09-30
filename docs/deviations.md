@@ -33,7 +33,7 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 | D-5 | fixed (not ported) | The OCP routine computes and discards a 31-term Redlich–Kister sum on every call |
 | D-6 | fixed | Reaction derivatives use absolute FD steps of 10⁻⁶ (≈ 4 % of c_s,max, 100 % of the initial c_s) |
 | D-7 | fixed | One linearized solve per time step (no Newton iteration); nonlinearity error is not controlled |
-| D-8 | kept (not ported; see §D-8) | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
+| D-8 | kept (not ported; see §D-8); v0.4.0 adds a fresh solid-diffusion crystal scale (model.md §12) | The inactive crystal-scale code has undeclared and misspelled variables and inconsistent constants |
 | D-9 | fixed (author's decision) | Porosity 0.5 plus active-material fraction 0.8 add up to more than 1 |
 | D-11 | fixed | Interior and interface ionic-current rows leave the diffusion current out of the residual, so the model solves Ohm's law for Φ₂ and drops the diffusion potential |
 | D-12 | fixed (author's decision) | The lithium-anode overpotential (RT/F)·ln(I/i₀) is singular at zero current and is half the Butler–Volmer slope for α = 0.5 |
@@ -92,7 +92,7 @@ Status values: **candidate** (suspected from reading the source), **confirmed** 
 
 ## D-8. Inactive crystal-scale code
 
-See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-in-any-archived-run). This has no effect on archived results because the code never runs.
+See [model.md §8](model.md#8-inactive-code-present-in-the-source-not-executed-in-any-archived-run). This has no effect on archived results because the code never runs. The original's crystal code is not ported. v0.4.0 adds a crystal scale written fresh, solid diffusion with `particle_model = 'crystal'` in corrected mode ([model.md §12](model.md#12-crystal-scale-solid-diffusion-corrected-mode-v040)); the original's α/β phase-change design is not part of it.
 
 ## D-9. Volume fractions add up to more than 1
 

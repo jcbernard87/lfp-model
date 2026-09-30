@@ -11,6 +11,7 @@ These are the default values in the original research code. The source line (`L�
 | `xmax` | L_cath (input `L_cath_um`, µm) | 24 × 10⁻⁴ | cm | L124 | cathode thickness, 24 µm. The original computes `24 * 1.0d-4`, which differs from the literal 24.0 × 10⁻⁴ in the last bit, so the input is the thickness in µm and L_cath = L_cath_um × 10⁻⁴ cm |
 | `len_sep` | L_sep | 25 × 10⁻⁴ | cm | L109 | separator thickness, 25 µm (the source comment asks whether µm or cm) |
 | `NJ` | | 101 | | L35 | total nodes |
+| (new) `nj_crystal` | | 21 | | — | crystal model: nodes across a crystal, center and surface included (the original's `NJ_c` = 51 was never used). 21 nodes give the 2C capacity within 3 × 10⁻⁴ equivalents of 81 nodes (validation.md §6) |
 | `SEP_NODE` | | 22 | | L108 | separator/cathode interface node |
 | `eps` | ε | 0.5 | | L126 | cathode porosity |
 | `volfrac_AM` | ε_AM (`eps_AM`) | 0.8 (stored 0.800000011920929) | | L125 | faithful mode: active-material volume fraction, as in the original (ε + ε_AM = 1.3 > 1, **[D-9]**) |
@@ -42,7 +43,9 @@ These are the default values in the original research code. The source line (`L�
 | derived `spec_a` | a | 3 ε_AM/R_p = 1.2 × 10⁵ | cm⁻¹ | L127 | |
 | `rxn_k` | k | 10⁻⁸ · 10^0.966 (stored 10⁻⁸ × 9.24698257446289) | mol^(−1/2)·cm^(5/2)/s | L98 | 10^0.966 is evaluated in single precision, with the exponent itself rounded to float32 first; confirmed by the byte-exact faithful reproduction |
 | `alpha_a`, `alpha_c` | α_a, α_c | 0.5, 0.5 | | L148 | |
-| `diff_c` | D_s | 8.0 × 10⁻¹⁴ | cm²/s | L97 | used only by the inactive crystal scale |
+| `diff_c` | D_c (`D_c`) | 8.0 × 10⁻¹⁴ | cm²/s | L97 | used only by the inactive crystal scale of the original (its sweep substitution is commented out); in v0.4.0 the default solid diffusivity of the crystal model (model.md §12) |
+| (new) | `particle_model` | `'uniform'` | | — | corrected mode: `'uniform'` particles (§10) or `'crystal'` (solid diffusion, model.md §12) |
+| (new) | `crystal_shape` | `'sphere'` | | — | crystal model: `'sphere'`, `'cylinder'` or `'slab'`; a = (k+1)ε_AM/R_p with k = 2, 1, 0 |
 
 ## Constants
 

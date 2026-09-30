@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+A crystal scale in corrected mode; the uniform model and faithful mode are unchanged (their output is byte-identical to 0.3.0).
+
+- **Crystal model** (`particle_model = 'crystal'`, docs/model.md §12): each cathode volume holds a crystal with solid-state diffusion, `crystal_shape` = `'sphere'` (default), `'cylinder'` or `'slab'`, solved together with the electrode by a condensed Newton step. The original's inactive crystal code is not ported (D-8); the α/β phase change is not included.
+- **Inputs:** `particle_model`, `crystal_shape` and `D_c` (default 8 × 10⁻¹⁴ cm²/s, the original's `diff_c`) in `&active`; `nj_crystal` (default 21) in `&cell`.
+- **Notebook** `04_crystal_scale`: profiles inside the crystals, capacity against rate and D_c, the uniform limit and the three shapes.
+- Requires bandsolver 0.1.2.
+
 ## 0.3.0 (unreleased)
 
 Corrected mode is reformulated so that physical limits are reached smoothly; faithful mode is unchanged (still byte-identical to the original).
