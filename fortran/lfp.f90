@@ -672,14 +672,25 @@ contains
             if (j == nj_crystal) rr = R_p
             rW = max(rr - xtal_h/2.0_dp, 0.0_dp)
             rE = min(rr + xtal_h/2.0_dp, R_p)
-            xtal_V(j) = (rE**(k + 1) - rW**(k + 1))/real(k + 1, dp)
+            xtal_V(j) = (ipow(rE, k + 1) - ipow(rW, k + 1))/real(k + 1, dp)
         end do
         do j = 1, nj_crystal - 1
-            xtal_A(j) = (xtal_h*(real(j - 1, dp) + 0.5_dp))**k
+            xtal_A(j) = ipow(xtal_h*(real(j - 1, dp) + 0.5_dp), k)
         end do
-        xtal_AR = R_p**k
+        xtal_AR = ipow(R_p, k)
         a_x = real(k + 1, dp)*vf_AM/R_p
     end subroutine crystal_setup
+
+    pure real(dp) function ipow(x, n)
+        !! x**n by repeated multiplication (the same rounding as the C++ program)
+        real(dp), intent(in) :: x
+        integer, intent(in) :: n
+        integer :: q
+        ipow = 1.0_dp
+        do q = 1, n
+            ipow = ipow*x
+        end do
+    end function ipow
 
     ! =============================== kinetics ===============================
     real(dp) function cs_max()

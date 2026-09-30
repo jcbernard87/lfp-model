@@ -193,10 +193,20 @@ double sigm(double x) {
     const double e = std::exp(-std::abs(x));
     return x >= 0.0 ? 1.0 / (1.0 + e) : e / (1.0 + e);
 }
+// x**n by repeated multiplication (the same rounding as the Fortran program)
+double ipow(double x, int n) {
+    double r = 1.0;
+    for (int q = 0; q < n; ++q) r = r * x;
+    return r;
+}
 
 struct Params {
     double L_cath_um = 24.0, L_sep = 25.0e-4;  // cathode thickness in um (L_cath = L_cath_um*1e-4 cm)
     int nj = 101, sep_node = 22;
+    int nj_crystal = 21;                   // crystal model: nodes across a crystal (center and surface included)
+    std::string particle_model = "uniform";  // corrected mode: 'uniform' particles or 'crystal' (solid diffusion)
+    std::string crystal_shape = "sphere";    // crystal model: 'sphere', 'cylinder' or 'slab'
+    double D_c = 8.0e-14;                  // crystal model: solid diffusivity [cm2/s]
     double eps = 0.5, eps_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5;
     double f_AM = 0.8;  // corrected mode: active fraction of the solid phase (D-9)
     double D = 2.0e-6, t_plus = 0.25, c_bulk = 1.0e-3, z_plus = 1.0, z_minus = -1.0;
@@ -243,7 +253,7 @@ Params read_input(const std::string& path) {
     std::map<std::string, double*> reals = {
         {"l_cath_um", &p.L_cath_um}, {"l_sep", &p.L_sep}, {"eps", &p.eps}, {"eps_am", &p.eps_AM}, {"f_am", &p.f_AM},
         {"eps_sep", &p.eps_sep}, {"tau_sep", &p.tau_sep}, {"bruggeman", &p.bruggeman}, {"d", &p.D},
-        {"t_plus", &p.t_plus}, {"c_bulk", &p.c_bulk}, {"kappa_bg", &p.kappa_bg}, {"z_plus", &p.z_plus}, {"z_minus", &p.z_minus},
+        {"t_plus", &p.t_plus}, {"c_bulk", &p.c_bulk}, {"d_c", &p.D_c}, {"kappa_bg", &p.kappa_bg}, {"z_plus", &p.z_plus}, {"z_minus", &p.z_minus},
         {"sigma", &p.sigma}, {"m", &p.M}, {"rho", &p.rho}, {"q_th", &p.Q_th}, {"r_p", &p.R_p},
         {"k_rxn", &p.k_rxn}, {"alpha_a", &p.alpha_a}, {"alpha_c", &p.alpha_c}, {"k_li", &p.k_Li},
         {"c_li_ref", &p.c_Li_ref}, {"r", &p.R}, {"t", &p.T}, {"f", &p.F}, {"c_rate", &p.C_rate},
@@ -251,8 +261,11 @@ Params read_input(const std::string& path) {
         {"t_max", &p.t_max}, {"fd_step", &p.fd_step}, {"v_min", &p.V_min}, {"v_max", &p.V_max},
         {"newton_tol", &p.newton_tol}, {"write_interval", &p.write_interval}};
     std::map<std::string, int*> ints = {{"nj", &p.nj}, {"sep_node", &p.sep_node}, {"n_steps", &p.n_steps},
-                                        {"newton_max_iter", &p.newton_max_iter}, {"cycles", &p.cycles}};
-    std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}, {"steps", &p.steps}};
+                                        {"newton_max_iter", &p.newton_max_iter}, {"cycles", &p.cycles},
+                                        {"nj_crystal", &p.nj_crystal}};
+    std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}, {"steps", &p.steps},
+                                                {"particle_model", &p.particle_model},
+                                                {"crystal_shape", &p.crystal_shape}};
     const std::regex group(R"(&(\w+)([\s\S]*?)/)");
     const std::regex entry(R"((\w+)\s*=\s*('[^']*'|"[^"]*"|[^,\s/]+))");
     for (std::sregex_iterator g(text.begin(), text.end(), group), end; g != end; ++g) {
@@ -360,6 +373,12 @@ struct Model {
     double dplus = 0.0, dminus = 0.0;  // ion diffusivities (corrected mode)
     int s;  // 0-based interface node
     std::vector<double> dx, aW, aE, bW, bE;
+    // crystal model (corrected mode; docs/model.md section 12): one crystal per cathode volume,
+    // electrode nodes s+1 .. nj-2; vertex-centred mesh with node volumes xtal_V and face areas xtal_A
+    bool crystal = false;
+    int nl = 0;
+    double xtal_h = 0.0, xtal_AR = 0.0, a_x = 0.0;
+    std::vector<double> xtal_V, xtal_A;
 
     explicit Model(Params in) : p(std::move(in)) {
         static const double OCP_FIT[7] = {3.114559, 4.438792, 71.7352, 70.85337, 4.240252, 68.5605, 67.730082};
@@ -409,6 +428,37 @@ struct Model {
         for (int j = s + 1; j < nj - 1; ++j) dx[j] = h_cat;
         for (int j = 1; j < nj; ++j) { aW[j] = dx[j - 1] / (dx[j - 1] + dx[j]); bW[j] = 2.0 / (dx[j - 1] + dx[j]); }
         for (int j = 0; j < nj - 1; ++j) { aE[j] = dx[j] / (dx[j + 1] + dx[j]); bE[j] = 2.0 / (dx[j] + dx[j + 1]); }
+        crystal_setup();
+    }
+
+    // validate the particle-model inputs and build the crystal mesh (see crystal.py in Python)
+    void crystal_setup() {
+        if (p.particle_model != "uniform" && p.particle_model != "crystal")
+            throw std::runtime_error("particle_model must be one of ('uniform', 'crystal'), got '" + p.particle_model + "'");
+        int k;
+        if (p.crystal_shape == "slab") k = 0;
+        else if (p.crystal_shape == "cylinder") k = 1;
+        else if (p.crystal_shape == "sphere") k = 2;
+        else throw std::runtime_error("crystal_shape must be one of ('slab', 'cylinder', 'sphere'), got '" + p.crystal_shape + "'");
+        crystal = p.particle_model == "crystal";
+        nl = 0;
+        if (!crystal) return;
+        if (faithful) throw std::runtime_error("particle_model='crystal' needs mode='corrected'");
+        if (p.nj_crystal < 4) throw std::runtime_error("nj_crystal must be at least 4, got " + std::to_string(p.nj_crystal));
+        const int nc = p.nj_crystal;
+        nl = p.nj - 2 - s;
+        xtal_h = p.R_p / static_cast<double>(nc - 1);
+        xtal_V.assign(nc, 0.0);
+        xtal_A.assign(nc - 1, 0.0);
+        for (int j = 0; j < nc; ++j) {
+            double rr = xtal_h * static_cast<double>(j);
+            if (j == nc - 1) rr = p.R_p;
+            const double rW = std::max(rr - xtal_h / 2.0, 0.0), rE = std::min(rr + xtal_h / 2.0, p.R_p);
+            xtal_V[j] = (ipow(rE, k + 1) - ipow(rW, k + 1)) / static_cast<double>(k + 1);
+        }
+        for (int j = 0; j < nc - 1; ++j) xtal_A[j] = ipow(xtal_h * (static_cast<double>(j) + 0.5), k);
+        xtal_AR = ipow(p.R_p, k);
+        a_x = static_cast<double>(k + 1) * vf_AM / p.R_p;
     }
 
     // ---- kinetics ----
@@ -696,6 +746,10 @@ struct Model {
             for (int v = 0; v < NV; ++v) blk(B, j, ICS, v) = 0.0;
             blk(B, j, ICS, ICS) = 1.0;
         }
+        if (crystal) {  // the S column stays fixed; xtal_newton adds the crystals' reaction
+            for (std::size_t q = 0; q < G.size(); ++q) G[q] = -R[q];
+            return;
+        }
         for (int j = s; j < nj; ++j) {
             double i, di[NV];
             log_rate(&x[static_cast<std::size_t>(j) * NV], i, di);
@@ -783,6 +837,8 @@ int main(int argc, char** argv) {
             const double th0 = p.cs_init / m.cs_max();
             for (int j = 0; j < nj; ++j) { c[j * NV + IC] = 0.0; c[j * NV + ICS] = std::log(th0 / (1.0 - th0)); }
         }
+        const int nc = p.nj_crystal;
+        std::vector<double> xc(static_cast<std::size_t>(nc) * m.nl, std::log((p.cs_init / m.cs_max()) / (1.0 - p.cs_init / m.cs_max())));
         double t = 0.0, mAhg = 0.0, dt = p.t_max / static_cast<double>(p.n_steps);
         std::string exit_reason = "max_steps";
         int nsolve = 0;
@@ -877,8 +933,133 @@ int main(int argc, char** argv) {
                         G[static_cast<std::size_t>(j) * NV + r] = G[static_cast<std::size_t>(j) * NV + r] / sc;
                     }
             };
+            // crystal l's rows without the reaction (diffusion_rows in Python): storage plus the net outward
+            // diffusive flux of each control volume, and the tridiagonal dR/ds
+            auto xtal_rows = [&](int l, double dtt, const std::vector<double>& xcold, std::vector<double>& Rc,
+                                 std::vector<double>& Bc, std::vector<double>& Dq, std::vector<double>& Aq) {
+                std::vector<double> th(nc), dth(nc), gx(nc - 1), Jf(nc - 1);
+                const double csm = m.cs_max();
+                const std::size_t o = static_cast<std::size_t>(l) * nc;
+                for (int q = 0; q < nc; ++q) {
+                    th[q] = sigm(xc[o + q]);
+                    dth[q] = th[q] * sigm(-xc[o + q]);
+                    Rc[q] = csm * m.xtal_V[q] * (th[q] - sigm(xcold[o + q])) / dtt;
+                    Bc[q] = csm * m.xtal_V[q] * dth[q] / dtt;
+                }
+                for (int q = 0; q < nc - 1; ++q) {
+                    gx[q] = p.D_c * csm * m.xtal_A[q] / m.xtal_h;
+                    Jf[q] = -gx[q] * (th[q + 1] - th[q]);
+                }
+                std::fill(Dq.begin(), Dq.end(), 0.0);
+                std::fill(Aq.begin(), Aq.end(), 0.0);
+                for (int q = 0; q < nc - 1; ++q) {
+                    Rc[q] = Rc[q] + Jf[q];
+                    Bc[q] = Bc[q] + gx[q] * dth[q];
+                    Dq[q] = -gx[q] * dth[q + 1];
+                }
+                for (int q = 1; q < nc; ++q) {
+                    Rc[q] = Rc[q] - Jf[q - 1];
+                    Bc[q] = Bc[q] + gx[q - 1] * dth[q];
+                    Aq[q] = -gx[q - 1] * dth[q - 1];
+                }
+            };
+            // one backward-Euler step with crystals, solved by the condensed Newton iteration (see
+            // CrystalModel.newton_step in Python and xtal_newton in the Fortran program)
+            auto xtal_newton = [&](double h) {
+                const std::size_t ntot = static_cast<std::size_t>(nc) * m.nl;
+                const std::vector<double> c_old = c, xc_old = xc;
+                const double sgn[3] = {-1.0 / p.F, 1.0, -1.0};  // reaction sign in rows IC, IP1, IP2
+                std::vector<double> gcpl(3 * static_cast<std::size_t>(m.nl)), Jce(gcpl.size());
+                std::vector<double> Rc(nc), Bc(nc), Dq(nc), Aq(nc), A1(ntot), B1(ntot), D1(ntot), dxc(ntot);
+                std::vector<std::vector<double>> rhs(4, std::vector<double>(ntot)), sol(4);
+                double prev = std::numeric_limits<double>::infinity();
+                for (int k = 0; k < p.newton_max_iter; ++k) {
+                    m.log_assemble(c, c_old, h, m.i_app, A, B, Dm, G);
+                    for (auto& r : rhs) std::fill(r.begin(), r.end(), 0.0);
+                    for (int l = 1; l <= m.nl; ++l) {
+                        const int j = m.s + l;
+                        double y[NV], i, di[NV];
+                        for (int v = 0; v < NV; ++v) y[v] = c[static_cast<std::size_t>(j) * NV + v];
+                        y[ICS] = xc[static_cast<std::size_t>(l - 1) * nc + nc - 1];
+                        m.log_rate(y, i, di);
+                        const double w = m.a_x * m.dx[j];
+                        for (int fl = 0; fl < 3; ++fl) {
+                            G[static_cast<std::size_t>(j) * NV + fl] = G[static_cast<std::size_t>(j) * NV + fl] - (w * i) * sgn[fl];
+                            for (int v = 0; v < 3; ++v) {
+                                const std::size_t o = (static_cast<std::size_t>(j) * NV + fl) * NV + v;
+                                B[o] = B[o] + (w * sgn[fl]) * di[v];
+                            }
+                            gcpl[static_cast<std::size_t>(l - 1) * 3 + fl] = (w * di[ICS]) * sgn[fl];
+                            Jce[static_cast<std::size_t>(l - 1) * 3 + fl] = m.xtal_AR * di[fl] / p.F;
+                        }
+                        xtal_rows(l - 1, h, xc_old, Rc, Bc, Dq, Aq);
+                        Rc[nc - 1] = Rc[nc - 1] + m.xtal_AR * i / p.F;
+                        Bc[nc - 1] = Bc[nc - 1] + m.xtal_AR * di[ICS] / p.F;
+                        for (int q = 0; q < nc; ++q) {
+                            double sc = std::abs(Bc[q]);
+                            if (sc == 0.0) sc = 1.0;
+                            const std::size_t o = static_cast<std::size_t>(l - 1) * nc + q;
+                            A1[o] = Aq[q] / sc;
+                            B1[o] = Bc[q] / sc;
+                            D1[o] = Dq[q] / sc;
+                            rhs[0][o] = -Rc[q] / sc;
+                            if (q == nc - 1)
+                                for (int kk = 1; kk <= 3; ++kk) rhs[kk][o] = -Jce[static_cast<std::size_t>(l - 1) * 3 + kk - 1] / sc;
+                        }
+                    }
+                    bool good = true;
+                    for (int kk = 0; kk <= 3 && good; ++kk)
+                        good = band::solve(1, static_cast<int>(ntot), A1, B1, D1, rhs[kk], sol[kk], band::Pivot::partial);
+                    if (!good) break;
+                    // condense the crystals into the electrode's diagonal blocks
+                    for (int l = 1; l <= m.nl; ++l) {
+                        const int j = m.s + l;
+                        const std::size_t last = static_cast<std::size_t>(l) * nc - 1;
+                        for (int fl = 0; fl < 3; ++fl) {
+                            const double gc = gcpl[static_cast<std::size_t>(l - 1) * 3 + fl];
+                            for (int kk = 0; kk < 3; ++kk) {
+                                const std::size_t o = (static_cast<std::size_t>(j) * NV + fl) * NV + kk;
+                                B[o] = B[o] + gc * sol[kk + 1][last];
+                            }
+                            G[static_cast<std::size_t>(j) * NV + fl] = G[static_cast<std::size_t>(j) * NV + fl] - gc * sol[0][last];
+                        }
+                    }
+                    equilibrate();
+                    if (!band::solve(NV, nj, A, B, Dm, G, dc, band::Pivot::partial)) break;
+                    for (int l = 1; l <= m.nl; ++l) {
+                        const std::size_t j = static_cast<std::size_t>(m.s + l) * NV;
+                        for (int q = 0; q < nc; ++q) {
+                            const std::size_t o = static_cast<std::size_t>(l - 1) * nc + q;
+                            dxc[o] = sol[0][o] + sol[1][o] * dc[j + 0] + sol[2][o] * dc[j + 1] + sol[3][o] * dc[j + 2];
+                        }
+                    }
+                    double lam = lbounded(dc), mx = 0.0;
+                    for (double v : dxc) mx = std::max(mx, std::abs(v));
+                    if (mx > 2.0) lam = std::min(lam, 2.0 / mx);
+                    // divergence is judged on the electrode unknowns: a large linearized update of the
+                    // crystals' log-odds only reflects the log scale near theta = 0 or 1 (damped by lam)
+                    double raw = 0.0;
+                    for (double v : dc) raw = std::max(raw, std::abs(v));
+                    for (std::size_t q = 0; q < c.size(); ++q) c[q] = c[q] + lam * dc[q];
+                    for (std::size_t q = 0; q < ntot; ++q) xc[q] = xc[q] + lam * dxc[q];
+                    double upd = 0.0;
+                    for (std::size_t q = 0; q < c.size(); q += NV)
+                        upd = std::max({upd, std::exp(c[q + IC]) * std::abs(dc[q + IC]), std::abs(dc[q + IP1]), std::abs(dc[q + IP2])});
+                    for (std::size_t q = 0; q < ntot; ++q) {
+                        const double th = sigm(xc[q]);
+                        upd = std::max(upd, th * sigm(-xc[q]) * std::abs(dxc[q]));
+                    }
+                    if (!std::isfinite(raw) || raw > 1.0e3) break;
+                    if (lam == 1.0 && converged(upd, prev, p.newton_tol)) return true;
+                    prev = upd;
+                }
+                c = c_old;
+                xc = xc_old;
+                return false;
+            };
             // one backward-Euler step of length h at the current m.i_app, solved with Newton (log variables)
             auto newton_step = [&](double h) {
+                if (m.crystal) return xtal_newton(h);
                 const std::vector<double> c_old = c;
                 double prev = std::numeric_limits<double>::infinity();
                 for (int k = 0; k < p.newton_max_iter; ++k) {
@@ -902,16 +1083,17 @@ int main(int argc, char** argv) {
                 const double min_dt = 1.0e-10, event_dv = 1.0e-4, event_min_dt = 1.0e-12;
                 const int max_failures = 200;  // Newton failures allowed within one step
                 int failures = 0;
-                const std::vector<double> c_begin = c;
+                const std::vector<double> c_begin = c, xc_begin = xc;
                 double hh = dtt;
                 t_done = 0.0;
                 stopped = false;
                 while (t_done < dtt) {
                     hh = std::min(hh, dtt - t_done);
-                    const std::vector<double> c_save = c;
+                    const std::vector<double> c_save = c, xc_save = xc;
                     if (!newton_step(hh)) {
                         if (hh / 2 < min_dt || ++failures >= max_failures) {
                             c = c_begin;  // give up: report the state at the start of the step
+                            xc = xc_begin;
                             return false;
                         }
                         hh = hh / 2;
@@ -920,7 +1102,7 @@ int main(int argc, char** argv) {
                     if (check) {
                         const double vv = cell_voltage(), mg = std::min(vv - vlo, vhi - vv);
                         if (mg < 0.0) {
-                            if (mg < -event_dv && hh / 2 >= event_min_dt) { c = c_save; hh = hh / 2; continue; }
+                            if (mg < -event_dv && hh / 2 >= event_min_dt) { c = c_save; xc = xc_save; hh = hh / 2; continue; }
                             t_done = t_done + hh;
                             stopped = true;
                             return true;
@@ -936,9 +1118,16 @@ int main(int argc, char** argv) {
             auto limit_reason = [&]() -> std::string {
                 double cmin = std::numeric_limits<double>::infinity(), thmin = cmin, thmax = -cmin;
                 for (int j = 0; j < nj; ++j) cmin = std::min(cmin, p.c_bulk * std::exp(c[j * NV + IC]));
-                for (int j = m.s; j < nj; ++j) {
-                    thmin = std::min(thmin, sigm(c[j * NV + ICS]));
-                    thmax = std::max(thmax, sigm(c[j * NV + ICS]));
+                if (m.crystal) {  // the crystal surfaces, where the reaction is
+                    for (int l = 0; l < m.nl; ++l) {
+                        thmin = std::min(thmin, sigm(xc[static_cast<std::size_t>(l) * nc + nc - 1]));
+                        thmax = std::max(thmax, sigm(xc[static_cast<std::size_t>(l) * nc + nc - 1]));
+                    }
+                } else {
+                    for (int j = m.s; j < nj; ++j) {
+                        thmin = std::min(thmin, sigm(c[j * NV + ICS]));
+                        thmax = std::max(thmax, sigm(c[j * NV + ICS]));
+                    }
                 }
                 if (cmin < 1.0e-3 * p.c_bulk) return "electrolyte_depleted";
                 if (thmax > 1.0 - 1.0e-3) return "particles_full";
@@ -948,9 +1137,10 @@ int main(int argc, char** argv) {
             // one constant-voltage time step: find I with V(I) = V_set (see simulate.cv_step in Python)
             auto cv_step = [&](double h, double V_set, double& I) {
                 const double tol = 1.0e-9, inf = std::numeric_limits<double>::infinity();
-                const std::vector<double> c_start = c;
+                const std::vector<double> c_start = c, xc_start = xc;
                 auto f = [&](double Itry, bool& good) {
                     c = c_start;
+                    xc = xc_start;
                     m.i_app = Itry;
                     good = newton_step(h);
                     if (!good) return Itry < 0 ? inf : -inf;
@@ -975,7 +1165,7 @@ int main(int argc, char** argv) {
                     fI = f(I, good);
                     if (good && std::abs(fI) <= tol) return true;
                 }
-                if (!(have_a && have_b)) { c = c_start; return false; }
+                if (!(have_a && have_b)) { c = c_start; xc = xc_start; return false; }
                 int side = 0;
                 for (int it = 0; it < 200; ++it) {
                     if (std::isfinite(fa) && std::isfinite(fb)) {
@@ -986,7 +1176,7 @@ int main(int argc, char** argv) {
                     }
                     fI = f(I, good);
                     if (std::abs(fI) <= tol || (b - a) <= 1.0e-14 * m.i_1C) {
-                        if (!good) c = c_start;
+                        if (!good) { c = c_start; xc = xc_start; }
                         return good;
                     }
                     if (fI > 0) {
@@ -1000,6 +1190,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 c = c_start;
+                xc = xc_start;
                 return false;
             };
 
@@ -1039,6 +1230,7 @@ int main(int argc, char** argv) {
                     ++n_done;
                     bool bad = false;
                     for (double x : c) bad = bad || std::isnan(x);
+                    for (double x : xc) bad = bad || std::isnan(x);
                     if (bad) { write_row(false, step_no); exit_reason = "nan"; finished = false; break; }
                     if (stopped || (st.t >= 0 && t_step >= st.t * (1.0 - 1.0e-12))) {
                         write_row(false, step_no);

@@ -117,10 +117,10 @@ def test_fortran_crystal_matches_python(fortran_exe, run_native, tmp_path, shape
 
 
 BAD_CRYSTAL_INPUTS = [
-    ("&active particle_model = 'crystals' /\n&numerics mode = 'corrected' /\n", "particle_model"),
-    ("&active particle_model = 'crystal', crystal_shape = 'cube' /\n&numerics mode = 'corrected' /\n", "crystal_shape"),
-    ("&cell nj_crystal = 3 /\n&active particle_model = 'crystal' /\n&numerics mode = 'corrected' /\n", "nj_crystal"),
-    ("&active particle_model = 'crystal' /\n&numerics mode = 'faithful' /\n", "corrected"),
+    ("&active particle_model = 'crystals' /\n&numerics mode = 'corrected' /\n", "particle_model must be one of"),
+    ("&active particle_model = 'crystal', crystal_shape = 'cube' /\n&numerics mode = 'corrected' /\n", "crystal_shape must be one of"),
+    ("&cell nj_crystal = 3 /\n&active particle_model = 'crystal' /\n&numerics mode = 'corrected' /\n", "nj_crystal must be at least 4"),
+    ("&active particle_model = 'crystal' /\n&numerics mode = 'faithful' /\n", "needs mode='corrected'"),
 ]
 
 
@@ -129,4 +129,38 @@ def test_fortran_rejects_bad_crystal_input(fortran_exe, tmp_path, text, msg):
     f = tmp_path / "bad.nml"
     f.write_text(text)
     out = subprocess.run([str(fortran_exe), str(f)], cwd=tmp_path, capture_output=True, text=True)
+    assert out.returncode != 0 and msg in (out.stdout + out.stderr)
+
+
+@pytest.mark.parametrize("shape", ["sphere", "cylinder"])
+def test_cpp_matches_fortran_crystal(cpp_exe, fortran_exe, run_native, shape):
+    kw = dict(C_rate=2.0, mode="corrected", particle_model="crystal", crystal_shape=shape)
+    a = run_native(cpp_exe, name=f"c_{shape}.txt", **kw)
+    b = run_native(fortran_exe, name=f"f_{shape}.txt", **kw)
+    assert a.read_bytes() == b.read_bytes()
+
+
+CRYSTAL_CYCLE = "cc C=2 Vmin=2.5; rest t=600; cc C=-1 Vmax=4.0; cv V=4.0 Imin=0.05; rest t=600"
+
+
+def test_crystal_cycle_all_languages(fortran_exe, cpp_exe, run_native, tmp_path):
+    kw = dict(mode="corrected", particle_model="crystal", D_c=1.0e-12, steps=CRYSTAL_CYCLE)
+    f_out = run_native(fortran_exe, name="fx_cycle.txt", **kw)
+    c_out = run_native(cpp_exe, name="cx_cycle.txt", **kw)
+    fl, cl = f_out.read_text().splitlines(), c_out.read_text().splitlines()
+    assert len(fl) == len(cl) and [x[:-16] for x in fl] == [x[:-16] for x in cl]
+    r = run(Params(mode="corrected", particle_model="crystal", D_c=1.0e-12, steps=CRYSTAL_CYCLE))
+    p_out = tmp_path / "px.txt"
+    r.write(p_out)
+    sf, vf = read_tv(f_out)
+    sp, vp = read_tv(p_out)
+    assert sf == sp and vf.shape == vp.shape
+    np.testing.assert_allclose(vf, vp, rtol=1e-5, atol=1e-9)
+
+
+@pytest.mark.parametrize("text, msg", BAD_CRYSTAL_INPUTS)
+def test_cpp_rejects_bad_crystal_input(cpp_exe, tmp_path, text, msg):
+    f = tmp_path / "bad.nml"
+    f.write_text(text)
+    out = subprocess.run([str(cpp_exe), str(f)], cwd=tmp_path, capture_output=True, text=True)
     assert out.returncode != 0 and msg in (out.stdout + out.stderr)
