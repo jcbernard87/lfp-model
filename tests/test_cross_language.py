@@ -1,5 +1,6 @@
 """The Fortran (and later C++) programs must agree with the Python package."""
 import platform
+import subprocess
 
 import numpy as np
 import pytest
@@ -98,3 +99,34 @@ def test_protocol_cycle_all_languages(fortran_exe, cpp_exe, run_native, tmp_path
     sp, vp = read_tv(p_out)
     assert sf == sp and vf.shape == vp.shape
     np.testing.assert_allclose(vf, vp, rtol=1e-5, atol=1e-9)
+
+
+# ------------------------------------------------------------------ crystal model
+
+@pytest.mark.parametrize("shape", ["sphere", "slab"])
+def test_fortran_crystal_matches_python(fortran_exe, run_native, tmp_path, shape):
+    f_out = run_native(fortran_exe, C_rate=2.0, mode="corrected", particle_model="crystal",
+                       crystal_shape=shape, name=f"f_x_{shape}.txt")
+    r = run(Params(mode="corrected", C_rate=2.0, particle_model="crystal", crystal_shape=shape))
+    p_out = tmp_path / "p.txt"
+    r.write(p_out)
+    sf, vf = read_tv(f_out)
+    sp, vp = read_tv(p_out)
+    assert sf == sp and vf.shape == vp.shape
+    np.testing.assert_allclose(vf, vp, rtol=1e-5, atol=1e-9)
+
+
+BAD_CRYSTAL_INPUTS = [
+    ("&active particle_model = 'crystals' /\n&numerics mode = 'corrected' /\n", "particle_model"),
+    ("&active particle_model = 'crystal', crystal_shape = 'cube' /\n&numerics mode = 'corrected' /\n", "crystal_shape"),
+    ("&cell nj_crystal = 3 /\n&active particle_model = 'crystal' /\n&numerics mode = 'corrected' /\n", "nj_crystal"),
+    ("&active particle_model = 'crystal' /\n&numerics mode = 'faithful' /\n", "corrected"),
+]
+
+
+@pytest.mark.parametrize("text, msg", BAD_CRYSTAL_INPUTS)
+def test_fortran_rejects_bad_crystal_input(fortran_exe, tmp_path, text, msg):
+    f = tmp_path / "bad.nml"
+    f.write_text(text)
+    out = subprocess.run([str(fortran_exe), str(f)], cwd=tmp_path, capture_output=True, text=True)
+    assert out.returncode != 0 and msg in (out.stdout + out.stderr)
