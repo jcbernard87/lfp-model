@@ -209,9 +209,10 @@ class CrystalModel:
             dxc4 = np.zeros((nl, nc, N))
             dxc4[..., S] = dxc
             lam = bounded((dxe, dxc4))
-            # divergence is judged on the electrode unknowns: a large linearized update of the crystals'
-            # log-odds only reflects the log scale near theta = 0 or 1 (it is damped by `bounded`)
-            raw = float(np.max(np.abs(dxe)))
+            # divergence is judged on the damped electrode update: near theta = 0 or 1 a linearized
+            # log-odds update of the crystals is legitimately huge, and through the condensation it also
+            # inflates the undamped electrode update; `bounded` scales both down
+            raw = lam * float(np.max(np.abs(dxe)))
             st = CrystalState(st.x + lam * dxe, st.xc + lam * dxc)
             th = sigmoid(st.xc)
             upd = max(physical_update(st.x, dxe, frozen_s=True),

@@ -1036,10 +1036,12 @@ int main(int argc, char** argv) {
                     double lam = lbounded(dc), mx = 0.0;
                     for (double v : dxc) mx = std::max(mx, std::abs(v));
                     if (mx > 2.0) lam = std::min(lam, 2.0 / mx);
-                    // divergence is judged on the electrode unknowns: a large linearized update of the
-                    // crystals' log-odds only reflects the log scale near theta = 0 or 1 (damped by lam)
+                    // divergence is judged on the damped electrode update: near theta = 0 or 1 a linearized
+                    // log-odds update of the crystals is legitimately huge, and through the condensation it
+                    // also inflates the undamped electrode update; the step limit scales both down
                     double raw = 0.0;
                     for (double v : dc) raw = std::max(raw, std::abs(v));
+                    raw = lam * raw;
                     for (std::size_t q = 0; q < c.size(); ++q) c[q] = c[q] + lam * dc[q];
                     for (std::size_t q = 0; q < ntot; ++q) xc[q] = xc[q] + lam * dxc[q];
                     double upd = 0.0;
@@ -1176,8 +1178,11 @@ int main(int argc, char** argv) {
                     }
                     fI = f(I, good);
                     if (std::abs(fI) <= tol || (b - a) <= 1.0e-14 * m.i_1C) {
-                        if (!good) { c = c_start; xc = xc_start; }
-                        return good;
+                        // a collapsed bracket can sit on the edge of the currents for which a step converges,
+                        // next to a state far from V_set: accept only a state on the set voltage
+                        const bool accept = good && std::abs(fI) <= 1.0e-6;
+                        if (!accept) { c = c_start; xc = xc_start; }
+                        return accept;
                     }
                     if (fI > 0) {
                         a = I; fa = fI;

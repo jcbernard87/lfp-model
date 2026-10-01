@@ -207,7 +207,7 @@ i_n is the Butler–Volmer rate of §10, evaluated with the electrode node's u, 
 2. eliminates the crystals: δc = −J_cc⁻¹(R_c + J_ce δe), whose surface entry adds a 3 × 3 term to each cathode node's diagonal block and a correction to its residual;
 3. solves the electrode system with BAND and back-substitutes for δc.
 
-This is the exact Newton step of the coupled system (quadratic convergence). The step limits of §10 apply to the crystal unknowns too. Divergence (an update above 10³) is judged on the electrode unknowns only: near θ = 0 or 1 a linearized log-odds update of the crystals is legitimately large, and the step limit damps it.
+This is the exact Newton step of the coupled system (quadratic convergence). The step limits of §10 apply to the crystal unknowns too. Divergence (an update above 10³) is judged on the damped electrode update λ·max|δe|: near θ = 0 or 1 a linearized log-odds update of the crystals is legitimately huge, and through the condensation it also inflates the undamped electrode update (for example at the start of a constant-voltage hold after a charge has drained the crystal surfaces to θ ≈ 10⁻⁸); the step limit scales both down.
 
 **Limits.** The exit reasons `particles_full` and `particles_empty` refer to the crystal surfaces.
 

@@ -81,6 +81,8 @@ Measured on 2026-09-29 (same platform as above, bandsolver 0.1.2).
 | Small D_c = 10⁻¹⁷ at 1C | ends at `cutoff_low` |
 | Rest after a 2C partial discharge | voltage relaxes monotonically; Φ₁ − Φ₂ ends within 2 mV of the OCP of the mean θ |
 | Protocol cycle (2C discharge, rest, 1C charge to 4.0 V, CV to C/20, rest), D_c = 10⁻¹² | completes (the default D_c also completes; its CV hold lasts 1251 s) |
+| CC-CV charge to the default V_max = 4.2 V, default D_c (Fortran, C++; `test_crystal_cccv_to_default_vmax`) | completes; every CV row within 10⁻⁶ V of 4.2 V (the CV hold starts with the crystal surfaces at θ ≈ 10⁻⁸) |
+| D_c = 10⁻¹⁷, 2C and 5C charge with a 4.2 V hold (Fortran, C++) | the crystals cannot sustain the hold: both stop identically with `particles_empty`; no off-setpoint CV state is accepted |
 | Fortran vs Python (2C; sphere, slab) | agree to rtol 10⁻⁵ |
 | C++ vs Fortran (2C; sphere, cylinder) and the cycle | identical files (cycle: except the Li_Nernst round-off column, as in §2) |
 | Uniform model and faithful mode | output byte-identical to v0.3.0 |

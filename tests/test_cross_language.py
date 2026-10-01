@@ -164,3 +164,37 @@ def test_cpp_rejects_bad_crystal_input(cpp_exe, tmp_path, text, msg):
     f.write_text(text)
     out = subprocess.run([str(cpp_exe), str(f)], cwd=tmp_path, capture_output=True, text=True)
     assert out.returncode != 0 and msg in (out.stdout + out.stderr)
+
+
+CRYSTAL_CCCV_42 = "cc C=2 Vmin=2.5; rest t=100; cc C=-1 Vmax=4.2; cv V=4.2 Imin=0.5; rest t=10"
+
+
+@pytest.mark.parametrize("which", ["fortran", "cpp"])
+def test_crystal_cccv_to_default_vmax(fortran_exe, cpp_exe, run_native, which):
+    """A CC-CV charge held at the default V_max (4.2 V), default D_c: the CV hold starts with the crystal
+    surfaces drained to theta ~ 1e-8. Every step completes and every CV row sits on the set voltage."""
+    exe = fortran_exe if which == "fortran" else cpp_exe
+    out = run_native(exe, mode="corrected", particle_model="crystal", steps=CRYSTAL_CCCV_42, name=f"{which}_cccv.txt")
+    _, v = read_tv(out)
+    assert int(v[-1, 7]) == 5                                 # the final rest was reached: the protocol completed
+    cv = v[v[:, 7] == 4]
+    np.testing.assert_allclose(cv[:, 1], 4.2, atol=1e-6)
+
+
+@pytest.mark.parametrize("C", [2, 5])
+def test_crystal_cv_never_accepts_off_setpoint(fortran_exe, cpp_exe, run_native, C):
+    """D_c = 1e-17: the crystals cannot sustain the charge, so the CV current search runs into currents
+    for which no step converges. A CV state is only accepted on the set voltage; otherwise the run stops
+    with a limit reason, the same in both programs."""
+    steps = f"cc C={C} Vmin=2.5; rest t=100; cc C=-{C} Vmax=4.2; cv V=4.2 Imin=0.01; rest t=600"
+    outs = {}
+    for which, exe in (("fortran", fortran_exe), ("cpp", cpp_exe)):
+        out = run_native(exe, mode="corrected", particle_model="crystal", D_c=1.0e-17, steps=steps, name=f"{which}_cv{C}.txt")
+        _, v = read_tv(out)
+        if v[-1, 7] != 5:
+            v = v[:-1]                      # a run that stops reports the start-of-step state in its last row
+        cv = v[v[:, 7] == 4]
+        if len(cv):
+            np.testing.assert_allclose(cv[:, 1], 4.2, atol=1e-6)
+        outs[which] = out.read_text().splitlines()
+    assert [x[:-16] for x in outs["fortran"]] == [x[:-16] for x in outs["cpp"]]

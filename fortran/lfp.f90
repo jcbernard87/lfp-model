@@ -477,8 +477,10 @@ contains
             end if
             call cv_feval(h, V_set, c_start, xc_start, I, fI, good)
             if (abs(fI) <= tol .or. (b - a) <= 1.0e-14_dp*i_1C) then
-                ok = good
-                if (.not. good) then
+                ! a collapsed bracket can sit on the edge of the currents for which a step converges, next
+                ! to a state far from V_set: accept only a state on the set voltage
+                ok = good .and. abs(fI) <= 1.0e-6_dp
+                if (.not. ok) then
                     c = c_start
                     xc = xc_start
                 end if
@@ -1158,9 +1160,10 @@ contains
             lam = lbounded(dc)
             mx = maxval(abs(dxc))
             if (mx > 2.0_dp) lam = min(lam, 2.0_dp/mx)
-            ! divergence is judged on the electrode unknowns: a large linearized update of the crystals'
-            ! log-odds only reflects the log scale near theta = 0 or 1 (it is damped by the step limit)
-            raw = maxval(abs(dc))
+            ! divergence is judged on the damped electrode update: near theta = 0 or 1 a linearized
+            ! log-odds update of the crystals is legitimately huge, and through the condensation it also
+            ! inflates the undamped electrode update; the step limit scales both down
+            raw = lam*maxval(abs(dc))
             c = c + lam*dc
             xc = xc + lam*dxc
             upd = 0.0_dp
