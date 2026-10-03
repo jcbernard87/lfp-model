@@ -187,3 +187,28 @@ Every branch of `fillmat` (L980–L1670) is covered above:
 - [x] separator interior rows 1–4 (L1494–L1580) → §5
 - [x] cathode interior rows 1–4 (L1584–L1666) → §5
 - [x] `fillmat_c` (L1679–L1939), not executed → §8
+
+## 12. Crystal scale: solid diffusion (corrected mode, v0.4.0)
+
+With `particle_model = 'crystal'` each cathode volume (electrode nodes between the interface and the collector) carries one representative crystal with solid-state diffusion, instead of a uniform particle. The original's crystal-scale code (§8) is not ported; this scale is written fresh. It is stage 1 of two: an α/β phase-change model of LiFePO₄ may follow in a later version on the same structure.
+
+**Geometry.** `crystal_shape` = `slab`, `cylinder` or `sphere` (k = 0, 1, 2), with size R_p (the half-thickness of a slab, the radius otherwise). The crystal surface per electrode volume is a = (k+1)·ε_AM/R_p, which is the uniform model's 3ε_AM/R_p for a sphere.
+
+**Equations.** With θ = c_s/c_s,max and a constant solid diffusivity D_c (`D_c`):
+
+  c_s,max ∂θ/∂t = (1/rᵏ) ∂/∂r (rᵏ D_c c_s,max ∂θ/∂r),  ∂θ/∂r = 0 at r = 0,  −D_c c_s,max ∂θ/∂r = i_n/F at r = R_p (the outward flux; an anodic i_n removes lithium)
+
+i_n is the Butler–Volmer rate of §10, evaluated with the electrode node's u, Φ₁, Φ₂ and the crystal's **surface** θ (OCP fit, tails D-16 and Nernst term D-14). The electrode rows carry the source a·i_n as in the uniform model; the electrode's own fourth unknown is held fixed.
+
+**Discretization.** Vertex-centred finite volumes: nodes at r_j = j·h, h = R_p/(nj_crystal − 1), each owning the volume ∫ rᵏ dr over [r_j − h/2, r_j + h/2] ∩ [0, R_p]. The flux through the face between nodes j and j+1 is −D_c c_s,max A_f (θ_{j+1} − θ_j)/h with A_f = r_fᵏ; the surface node receives the reaction flux R_pᵏ·i_n/F. Every node, the surface included, stores lithium: a surface that is filling or emptying can take up or give off lithium, as in the continuum (a zero-volume surface node could pass only what diffusion across half a cell carries, which fails at small D_c or in a constant-voltage hold). The unknown at every crystal node is the log-odds s = ln(θ/(1−θ)), so 0 < θ < 1 throughout (§10). Lithium is conserved exactly: the crystal rows telescope to d/dt ∑ c_s,max V_j θ_j = −R_pᵏ i_n/F.
+
+**Condensed Newton step.** The crystals couple only to their own electrode node, through the surface reaction. Every Newton iteration:
+1. assembles all crystals as one block-tridiagonal system with blocks of size 1 (J_cc) and solves it for the residual and for three right-hand sides, the surface row's derivatives with respect to the node's u, Φ₁ and Φ₂ (J_ce);
+2. eliminates the crystals: δc = −J_cc⁻¹(R_c + J_ce δe), whose surface entry adds a 3 × 3 term to each cathode node's diagonal block and a correction to its residual;
+3. solves the electrode system with BAND and back-substitutes for δc.
+
+This is the exact Newton step of the coupled system (quadratic convergence). The step limits of §10 apply to the crystal unknowns too. Divergence (an update above 10³) is judged on the damped electrode update λ·max|δe|: near θ = 0 or 1 a linearized log-odds update of the crystals is legitimately huge, and through the condensation it also inflates the undamped electrode update (for example at the start of a constant-voltage hold after a charge has drained the crystal surfaces to θ ≈ 10⁻⁸); the step limit scales both down.
+
+**Limits.** The exit reasons `particles_full` and `particles_empty` refer to the crystal surfaces.
+
+**Uniform limit.** For D_c → ∞ the crystal profiles flatten and the model becomes the uniform-particle model; the difference in cell voltage falls like 1/D_c ([validation.md](validation.md) §6).

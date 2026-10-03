@@ -12,6 +12,8 @@ from dataclasses import dataclass, fields, replace
 import numpy as np
 
 MODES = ("faithful", "corrected")
+PARTICLE_MODELS = ("uniform", "crystal")
+CRYSTAL_SHAPES = {"slab": 0, "cylinder": 1, "sphere": 2}   # k: face area ~ r**k
 
 
 def f32(x: float) -> float:
@@ -32,6 +34,7 @@ class Params:
     eps_sep: float = 0.39          # separator porosity
     tau_sep: float = 4.0           # separator tortuosity
     bruggeman: float = -0.5        # cathode tortuosity = eps**bruggeman
+    nj_crystal: int = 21           # crystal model: nodes across a crystal (center and surface included)
     # --- electrolyte ---
     D: float = 2.0e-6              # salt diffusivity [cm2/s]
     t_plus: float = 0.25           # cation transference number
@@ -47,6 +50,9 @@ class Params:
     k_rxn: float = 1.0e-8 * 10 ** 0.966   # rate constant
     alpha_a: float = 0.5
     alpha_c: float = 0.5
+    particle_model: str = "uniform"  # corrected mode: 'uniform' particles or 'crystal' (solid diffusion)
+    crystal_shape: str = "sphere"    # crystal model: 'sphere', 'cylinder' or 'slab'
+    D_c: float = 8.0e-14             # crystal model: solid diffusivity [cm2/s]
     # --- lithium counter electrode (output only) ---
     k_Li: float = 1.0e-6
     c_Li_ref: float = 1.0e-3
@@ -77,6 +83,15 @@ class Params:
     def __post_init__(self):
         if self.mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {self.mode!r}")
+        if self.particle_model not in PARTICLE_MODELS:
+            raise ValueError(f"particle_model must be one of {PARTICLE_MODELS}, got {self.particle_model!r}")
+        if self.crystal_shape not in CRYSTAL_SHAPES:
+            raise ValueError(f"crystal_shape must be one of {tuple(CRYSTAL_SHAPES)}, got {self.crystal_shape!r}")
+        if self.particle_model == "crystal":
+            if self.mode != "corrected":
+                raise ValueError("particle_model='crystal' needs mode='corrected'")
+            if self.nj_crystal < 4:
+                raise ValueError(f"nj_crystal must be at least 4, got {self.nj_crystal}")
 
     @classmethod
     def faithful(cls, **overrides) -> "Params":

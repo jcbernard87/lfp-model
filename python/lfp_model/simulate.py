@@ -9,17 +9,17 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
 import bandsolver
 
 from . import kinetics
+from .crystal import CrystalState
 from .model import Assembler, C, CS, P1, P2
 from .params import Params, f32
 from .driver import SolverFailure, limit_reason, run_protocol
-
 HEADER = ("State", "Time", "Voltage", "Equivalence", "Anode_Eta", "anode_exchange_c", "Edge_c0")
 UNITS = ("CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3")
 HEADER_EXTRA = ("Current", "Step", "Li_Nernst")   # corrected mode only
@@ -54,7 +54,7 @@ class Result:
     rows: list = field(default_factory=list)      # (state, t_h, V, equiv, eta_mV, i0_mA, c_edge[, I_mA, step])
     exit_reason: str = ""
     steps: int = 0
-    final_state: Optional[np.ndarray] = None
+    final_state: Optional[Union[np.ndarray, CrystalState]] = None   # CrystalState with particle_model = 'crystal'
 
     @property
     def array(self) -> np.ndarray:
@@ -212,11 +212,16 @@ def _row(p: Params, t: float, c: np.ndarray, mAhg: float, I: float, step: int):
 
 
 class Stepper:
-    """The corrected model (log variables) as a stepper for lfp_model.driver."""
+    """The corrected model (log variables; uniform particles or crystals) as a stepper for lfp_model.driver."""
 
     def __init__(self, p: Params, *, backend: str):
-        from .logmodel import LogModel
-        self.p, self.model, self.backend = p, LogModel(p), backend
+        if p.particle_model == "crystal":
+            from .crystal import CrystalModel
+            self.model = CrystalModel(p)
+        else:
+            from .logmodel import LogModel
+            self.model = LogModel(p)
+        self.p, self.backend = p, backend
 
     def initial_state(self):
         return self.model.initial_state()
@@ -225,16 +230,19 @@ class Stepper:
         return self.model.newton_step(c, h, I, backend=self.backend)
 
     def voltage(self, c, I):
-        return cell_voltage(self.p, c, I)
+        return cell_voltage(self.p, self.model.electrode(c), I)
 
     def row(self, t, c, mAhg, I, k):
-        return _row(self.p, t, c, mAhg, I, k)
+        return _row(self.p, t, self.model.electrode(c), mAhg, I, k)
 
-    @staticmethod
-    def finite(c):
+    def finite(self, c):
+        if hasattr(c, "xc"):
+            return bool(np.all(np.isfinite(c.x)) and np.all(np.isfinite(c.xc)))
         return bool(np.all(np.isfinite(c)))
 
     def limit_reason(self, x):
+        if hasattr(self.model, "limit_reason"):
+            return self.model.limit_reason(x)
         s = self.model.mesh.s
         th = self.model.cs(x)[s:] / self.model.cs_max
         return limit_reason(float(self.model.conc(x).min()), self.p.c_bulk, float(th.min()), float(th.max()))

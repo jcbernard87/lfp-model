@@ -40,6 +40,10 @@ class LogModel:
         x[:, S] = logit(p.cs_init / self.cs_max)
         return x
 
+    def electrode(self, x):
+        """The electrode state (the whole state: the particles are in its S column)."""
+        return x
+
     def conc(self, x):
         """Electrolyte concentration [mol/cm3] (nj,)."""
         return self.p.c_bulk * np.exp(x[:, U])

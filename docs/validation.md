@@ -1,6 +1,13 @@
 # Validation
 
-All numbers below were measured before deviation D-9 was applied to corrected mode, except the test results, which are re-run on every change. D-9 halves the active volume fraction, so per-area quantities (currents, a) change, but none of the checks depend on it. All numbers were measured on macOS arm64 (gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5, bandsolver 0.1.1) on 2026-09-27; the D-14/D-15 checks and effects on 2026-09-28. The corrected-mode rows of section 3 and the D-16 effects were re-measured for v0.3.0 (log variables, model.md §10) on 2026-09-29, with bandsolver 0.1.2. The public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
+When each number was measured (all on macOS arm64: gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5):
+
+- **2026-09-27**, bandsolver 0.1.1, before deviation D-9: sections 1–4, except as listed below. D-9 halves the active volume fraction, so per-area quantities (currents, a) changed after it; none of the checks depend on it.
+- **2026-09-28**: the D-14/D-15 checks and their effects.
+- **2026-09-29**, for v0.3.0 (log variables, model.md §10): the corrected-mode rows of section 3 and the D-16 effects. The Fortran and C++ programs used bandsolver 0.1.2; the Python environment still had bandsolver 0.1.1.
+- **2026-09-29**, bandsolver 0.1.2: section 6 (crystal model), except the rest row (2026-10-03).
+
+Test results are re-run on every change: the public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
 
 ## 1. Reproduction of the original research code (private)
 
@@ -61,4 +68,38 @@ For this cell (24 µm cathode, 1 M electrolyte) electrolyte transport is not lim
 ## 5. Not covered yet
 
 - Comparison with experimental data. This is done privately and never published with the repository.
-- The crystal-scale (solid-diffusion) model, which the original never ran (D-8).
+- The original's crystal-scale code, which it never ran (D-8). The v0.4.0 crystal model (§6) is new, not a port.
+- The α/β phase change inside the crystals.
+
+## 6. Crystal model (v0.4.0, public, `tests/test_crystal.py`)
+
+Measured on 2026-09-29 (same platform as above, bandsolver 0.1.2).
+
+| Check | Result |
+|---|---|
+| A crystal under constant inward flux vs the exact long-time solution c₀ + (k+1)Jt/R + (JR/2D)(r²/R² − (k+1)/(k+3)) (backward Euler is exact for it, so the error is spatial) | max error 2.6 × 10⁻⁶ (slab), 3.9 × 10⁻⁶ (cylinder), 5.2 × 10⁻⁶ (sphere) at 41 nodes; mean θ exact to 10⁻¹² |
+| Crystal mesh order (surface θ, 11 … 81 nodes) | 2.00, 2.00, 2.00 for all three shapes |
+| Full uncondensed Jacobian vs central differences (perturbed mid-discharge state) | max relative error 5 × 10⁻⁹ |
+| Condensed Newton step | converges quadratically (1C step: 9 × 10⁻⁴, 2 × 10⁻⁵, 2 × 10⁻⁸, 6 × 10⁻¹⁴); a Newton update of the full system at its solution is ≤ 2 × 10⁻¹⁴ |
+| Lithium into the crystals / (I t/F) and salt inventory, 300 s at 1C | 1 − 1 × 10⁻¹⁶; constant to 2 × 10⁻¹⁶ |
+| Uniform limit: max \|ΔV\| vs the uniform model over 1800 s at 1C | 3.1 mV (D_c = 10⁻¹¹), 0.33 mV (10⁻¹⁰), 33 µV (10⁻⁹), 3.3 µV (10⁻⁸), 0.033 µV (10⁻⁶): falls like 1/D_c |
+| Time order (2C, Δt = 1 … 0.125 s) and electrode mesh order (26 … 201 nodes) | 1 and 2 (asserted in the tests) |
+| Crystal nodes (sphere, D_c = 8 × 10⁻¹⁴, 2C): capacity to 2.5 V vs 81 nodes | +1.2 × 10⁻³ (11 nodes), +2.9 × 10⁻⁴ (21), +5.9 × 10⁻⁵ (41) equivalents |
+| Small D_c = 10⁻¹⁷ at 1C | ends at `cutoff_low` |
+| Rest after a 2C partial discharge (900 s), then 1800 s at I = 0 | voltage relaxes monotonically (by 0.13 mV); Φ₁ − Φ₂ ends within 2.1 µV of the OCP of the mean θ; the largest θ spread inside a crystal falls from 0.999 to 3.7 × 10⁻⁴ (the test asserts < 10⁻³, which D_c = 10⁻¹⁵ fails at 0.27) |
+| Protocol cycle (2C discharge, rest, 1C charge to 4.0 V, CV to C/20, rest), D_c = 10⁻¹² | completes (the default D_c also completes; its CV hold lasts 1251 s) |
+| CC-CV charge to the default V_max = 4.2 V, default D_c (Fortran, C++; `test_crystal_cccv_to_default_vmax`) | completes; every CV row within 10⁻⁶ V of 4.2 V (the CV hold starts with the crystal surfaces at θ ≈ 10⁻⁸) |
+| D_c = 10⁻¹⁷, 2C and 5C charge with a 4.2 V hold (Fortran, C++) | the crystals cannot sustain the hold: both stop identically with `particles_empty`; no off-setpoint CV state is accepted |
+| Fortran vs Python (2C; sphere, slab) | agree to rtol 10⁻⁵ |
+| C++ vs Fortran (2C; sphere, cylinder) and the cycle | identical files (cycle: except the Li_Nernst round-off column, as in §2) |
+| Uniform model and faithful mode | output byte-identical to v0.3.0 |
+
+**Capacity to 2.5 V** (electron equivalents; uniform model 0.7973 at 1C, 0.7970 at 2C):
+
+| D_c [cm²/s] | 1C | 2C |
+|---|---|---|
+| 10⁻¹² | 0.7914 | 0.7852 |
+| 8 × 10⁻¹⁴ (default) | 0.7236 | 0.6498 |
+| 10⁻¹⁴ | 0.3506 | 0.2124 |
+
+**Cost.** A 1C discharge takes 9.6 s in Python against 5.9 s for the uniform model.

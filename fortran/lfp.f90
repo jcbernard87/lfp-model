@@ -22,6 +22,10 @@ program lfp
     ! ---------------- parameters (defaults = original research code) ----------------
     real(dp) :: L_cath_um = 24.0_dp, L_sep = 25.0e-4_dp     ! cathode thickness in um (L_cath = L_cath_um*1e-4 cm)
     integer  :: nj = 101, sep_node = 22
+    integer  :: nj_crystal = 21                    ! crystal model: nodes across a crystal (center and surface included)
+    character(len=16) :: particle_model = 'uniform'   ! corrected mode: 'uniform' particles or 'crystal' (solid diffusion)
+    character(len=16) :: crystal_shape = 'sphere'     ! crystal model: 'sphere', 'cylinder' or 'slab'
+    real(dp) :: D_c = 8.0e-14_dp                   ! crystal model: solid diffusivity [cm2/s]
     real(dp) :: eps = 0.5_dp, eps_AM = 0.8_dp, eps_sep = 0.39_dp, tau_sep = 4.0_dp, bruggeman = -0.5_dp
     real(dp) :: f_AM = 0.8_dp          ! corrected mode: active fraction of the solid phase (D-9)
     real(dp) :: D = 2.0e-6_dp, t_plus = 0.25_dp, c_bulk = 1.0e-3_dp, z_plus = 1.0_dp, z_minus = -1.0_dp
@@ -42,10 +46,11 @@ program lfp
     real(dp) :: write_interval = 18.0_dp               ! [s], corrected mode
     character(len=256) :: file = 'Time_Voltage.txt'
 
-    namelist /cell/ L_cath_um, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman
+    namelist /cell/ L_cath_um, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman, nj_crystal
     real(dp) :: kappa_bg = 1.0e-8_dp                   ! corrected: background (solvent) ionic conductivity [S/cm]
     namelist /electrolyte/ D, t_plus, c_bulk, z_plus, z_minus, kappa_bg
-    namelist /active/ sigma, M, rho, Q_th, R_p, k_rxn, alpha_a, alpha_c, k_Li, c_Li_ref
+    namelist /active/ sigma, M, rho, Q_th, R_p, k_rxn, alpha_a, alpha_c, k_Li, c_Li_ref, &
+                      particle_model, crystal_shape, D_c
     namelist /constants/ R, T, F
     namelist /operation/ C_rate, phi1_init, phi2_init, cs_init, t_max, n_steps, V_min, V_max
     namelist /numerics/ fd_step, newton_tol, newton_max_iter, mode
@@ -60,7 +65,6 @@ program lfp
     real(dp) :: dplus, dminus                        ! ion diffusivities (corrected mode)
     real(dp) :: L_cath                   ! cathode thickness [cm], from L_cath_um as in the original (24 * 1.0d-4)
     real(dp) :: mass_area, i_1C, vf_AM   ! vf_AM: active volume fraction (eps_AM or f_AM*(1-eps))
-    real(dp), parameter :: THETA_REG = 1.0e-6_dp       ! D-13 regularization threshold
 
     ! ---------------- protocol (corrected mode) ----------------
     integer, parameter :: K_CC = 1, K_CV = 2, K_REST = 3
@@ -72,6 +76,13 @@ program lfp
     integer :: s                                  ! interface node index (1-based = sep_node)
     real(dp), allocatable :: dx(:), aW(:), aE(:), bW(:), bE(:)
     real(dp), allocatable :: c(:,:), dc(:,:), A(:,:,:), B(:,:,:), Dm(:,:,:), G(:,:)
+
+    ! ---------------- crystal model (corrected mode; docs/model.md section 12) ----------------
+    logical  :: crystal                           ! particle_model = 'crystal'
+    integer  :: nl                                ! crystals: one per cathode volume, electrode nodes s+1 .. nj-1
+    real(dp) :: xtal_h, xtal_AR, a_x              ! crystal mesh step, surface area R_p**k, crystal area per volume
+    real(dp), allocatable :: xtal_V(:), xtal_A(:) ! node volumes and face areas (vertex-centred)
+    real(dp), allocatable :: xc(:,:)              ! crystal log-odds (nj_crystal, nl)
 
     ! ---------------- time loop ----------------
     integer  :: ounit, nsolve
@@ -89,6 +100,8 @@ program lfp
     open(newunit=ounit, file=trim(file), status='replace', action='write')
 
     allocate(c(NV,nj), dc(NV,nj), A(NV,NV,nj), B(NV,NV,nj), Dm(NV,NV,nj), G(NV,nj))
+    allocate(xc(nj_crystal, nl))
+    xc = log((cs_init/cs_max())/(1.0_dp - cs_init/cs_max()))
     c(IC,:) = c_bulk
     c(IP1,:) = phi1_init
     c(IP2,:) = phi2_init
@@ -358,6 +371,12 @@ contains
                 end if
                 i_app = I
                 if (.not. ok) then
+                    ! keep the sub-steps completed before the failure: the limit is judged where it was reached
+                    if (skind(k) /= K_CV .and. h_done > 0.0_dp) then
+                        mAhg = mAhg + 1000.0_dp*(I/mass_area)*h_done/3600.0_dp
+                        time = time + h_done
+                        nsteps_done = nsteps_done + 1
+                    end if
                     call write_row_c(.false., k)
                     exit_reason = limit_reason()
                     nsolve = nsteps_done
@@ -367,7 +386,7 @@ contains
                 time = time + h_done
                 t_step = t_step + h_done
                 nsteps_done = nsteps_done + 1
-                if (any(ieee_is_nan(c))) then
+                if (any(ieee_is_nan(c)) .or. any(ieee_is_nan(xc))) then
                     call write_row_c(.false., k)
                     exit_reason = 'nan'
                     nsolve = nsteps_done
@@ -409,12 +428,13 @@ contains
         real(dp), intent(inout) :: I
         logical, intent(out) :: ok
         real(dp), parameter :: tol = 1.0e-9_dp
-        real(dp) :: c_start(NV,nj), fI, grow, a, b, fa, fb
+        real(dp) :: c_start(NV,nj), xc_start(nj_crystal,nl), fI, grow, a, b, fa, fb
         logical :: have_a, have_b, good
         integer :: it, side
         c_start = c
+        xc_start = xc
         ok = .false.
-        call cv_feval(h, V_set, c_start, I, fI, good)
+        call cv_feval(h, V_set, c_start, xc_start, I, fI, good)
         if (good .and. abs(fI) <= tol) then
             ok = .true.
             return
@@ -441,7 +461,7 @@ contains
                 end if
             end if
             grow = grow*2.0_dp
-            call cv_feval(h, V_set, c_start, I, fI, good)
+            call cv_feval(h, V_set, c_start, xc_start, I, fI, good)
             if (good .and. abs(fI) <= tol) then
                 ok = .true.
                 return
@@ -449,6 +469,7 @@ contains
         end do
         if (.not. (have_a .and. have_b)) then
             c = c_start
+            xc = xc_start
             return
         end if
         side = 0
@@ -459,10 +480,15 @@ contains
             else
                 I = 0.5_dp*(a + b)
             end if
-            call cv_feval(h, V_set, c_start, I, fI, good)
+            call cv_feval(h, V_set, c_start, xc_start, I, fI, good)
             if (abs(fI) <= tol .or. (b - a) <= 1.0e-14_dp*i_1C) then
-                ok = good
-                if (.not. good) c = c_start
+                ! a collapsed bracket can sit on the edge of the currents for which a step converges, next
+                ! to a state far from V_set: accept only a state on the set voltage
+                ok = good .and. abs(fI) <= 1.0e-6_dp
+                if (.not. ok) then
+                    c = c_start
+                    xc = xc_start
+                end if
                 return
             end if
             if (fI > 0) then
@@ -476,14 +502,16 @@ contains
             end if
         end do
         c = c_start
+        xc = xc_start
     end subroutine cv_step
 
-    subroutine cv_feval(h, V_set, c_start, Itry, fval, success)
+    subroutine cv_feval(h, V_set, c_start, xc_start, Itry, fval, success)
         !! f(I) = V - V_set after one Newton step from c_start; +/-inf if the step fails.
-        real(dp), intent(in) :: h, V_set, c_start(NV,nj), Itry
+        real(dp), intent(in) :: h, V_set, c_start(NV,nj), xc_start(nj_crystal,nl), Itry
         real(dp), intent(out) :: fval
         logical, intent(out) :: success
         c = c_start
+        xc = xc_start
         i_app = Itry
         call newton_step(h, success)
         if (success) then
@@ -608,7 +636,68 @@ contains
             aE(j) = dx(j)/(dx(j+1) + dx(j))
             bE(j) = 2.0_dp/(dx(j) + dx(j+1))
         end do
+        call crystal_setup()
     end subroutine setup
+
+    subroutine crystal_setup()
+        !! Validate the particle-model inputs and build the crystal mesh (see crystal.py in Python):
+        !! vertex-centred finite volumes, nodes at r_j = j h, volumes over [r_j - h/2, r_j + h/2] in [0, R].
+        integer :: k, j
+        real(dp) :: rr, rW, rE
+        character(len=16) :: buf
+        if (trim(particle_model) /= 'uniform' .and. trim(particle_model) /= 'crystal') then
+            write(error_unit,'(A)') 'particle_model must be one of (''uniform'', ''crystal''), got '''// &
+                trim(particle_model)//''''
+            error stop 2
+        end if
+        select case (trim(crystal_shape))
+        case ('slab');     k = 0
+        case ('cylinder'); k = 1
+        case ('sphere');   k = 2
+        case default
+            write(error_unit,'(A)') 'crystal_shape must be one of (''slab'', ''cylinder'', ''sphere''), got '''// &
+                trim(crystal_shape)//''''
+            error stop 2
+        end select
+        crystal = trim(particle_model) == 'crystal'
+        nl = 0
+        if (.not. crystal) return
+        if (faithful) then
+            write(error_unit,'(A)') 'particle_model=''crystal'' needs mode=''corrected'''
+            error stop 2
+        end if
+        if (nj_crystal < 4) then
+            write(buf,'(I0)') nj_crystal
+            write(error_unit,'(A)') 'nj_crystal must be at least 4, got '//trim(buf)
+            error stop 2
+        end if
+        nl = nj - 1 - s
+        xtal_h = R_p/real(nj_crystal - 1, dp)
+        allocate(xtal_V(nj_crystal), xtal_A(nj_crystal - 1))
+        do j = 1, nj_crystal
+            rr = xtal_h*real(j - 1, dp)
+            if (j == nj_crystal) rr = R_p
+            rW = max(rr - xtal_h/2.0_dp, 0.0_dp)
+            rE = min(rr + xtal_h/2.0_dp, R_p)
+            xtal_V(j) = (ipow(rE, k + 1) - ipow(rW, k + 1))/real(k + 1, dp)
+        end do
+        do j = 1, nj_crystal - 1
+            xtal_A(j) = ipow(xtal_h*(real(j - 1, dp) + 0.5_dp), k)
+        end do
+        xtal_AR = ipow(R_p, k)
+        a_x = real(k + 1, dp)*vf_AM/R_p
+    end subroutine crystal_setup
+
+    pure real(dp) function ipow(x, n)
+        !! x**n by repeated multiplication (the same rounding as the C++ program)
+        real(dp), intent(in) :: x
+        integer, intent(in) :: n
+        integer :: q
+        ipow = 1.0_dp
+        do q = 1, n
+            ipow = ipow*x
+        end do
+    end function ipow
 
     ! =============================== kinetics ===============================
     real(dp) function cs_max()
@@ -635,14 +724,10 @@ contains
     end function rate
 
     subroutine rate_derivs(cc, cs, p1, p2, i, di)
-        !! Rate and finite-difference derivatives w.r.t. (c, phi1, phi2, cs) (D-6).
+        !! Rate and finite-difference derivatives w.r.t. (c, phi1, phi2, cs) (D-6); faithful mode only.
         real(dp), intent(in) :: cc, cs, p1, p2
         real(dp), intent(out) :: i, di(NV)
         real(dp) :: h
-        if (.not. faithful) then
-            call rate_derivs_exact(cc, cs, p1, p2, i, di)
-            return
-        end if
         h = fd_step
         i = rate(cc, cs, p1, p2)
         if (cc <= h) then
@@ -658,56 +743,6 @@ contains
         di(IP1) = (rate(cc, cs, p1 + h, p2) - rate(cc, cs, p1 - h, p2))/(2.0_dp*h)
         di(IP2) = (rate(cc, cs, p1, p2 + h) - rate(cc, cs, p1, p2 - h))/(2.0_dp*h)
     end subroutine rate_derivs
-
-    real(dp) function ocp_slope(cs)
-        !! dU/dcs [V cm3/mol]
-        real(dp), intent(in) :: cs
-        real(dp) :: th, dth, du
-        th = (cs/(rho/M))/(M*Q_th*1000.0_dp*lit36/F)
-        dth = 1.0_dp/((rho/M)*(M*Q_th*1000.0_dp*lit36/F))
-        du = ocp_c(2)*(-ocp_c(3))/(1.0_dp + (-(ocp_c(3)*th) + ocp_c(4))**2) &
-           - ocp_c(5)*(-ocp_c(6))/(1.0_dp + (-(ocp_c(6)*th) + ocp_c(7))**2)
-        ocp_slope = du*dth
-    end function ocp_slope
-
-    subroutine power_reg(x, alpha, delta, g, dg)
-        !! x**alpha, replaced below delta by a C1 quadratic with g(0) = 0 and a finite slope (D-13).
-        real(dp), intent(in) :: x, alpha, delta
-        real(dp), intent(out) :: g, dg
-        real(dp) :: u
-        if (x < delta) then
-            u = x/delta
-            g = delta**alpha*((2.0_dp - alpha)*u + (alpha - 1.0_dp)*u*u)
-            dg = delta**(alpha - 1.0_dp)*((2.0_dp - alpha) + 2.0_dp*(alpha - 1.0_dp)*u)
-        else
-            g = x**alpha
-            dg = alpha*x**(alpha - 1.0_dp)
-        end if
-    end subroutine power_reg
-
-    subroutine rate_derivs_exact(cc, cs, p1, p2, i, di)
-        !! Rate and exact derivatives w.r.t. (c, phi1, phi2, cs); corrected mode (fixes D-6).
-        real(dp), intent(in) :: cc, cs, p1, p2
-        real(dp), intent(out) :: i, di(NV)
-        real(dp) :: rt, aa, bb, eta, i0, ea, ec, di_deta, gv, dgv, gs, dgs, pre, di0
-        rt = R*T
-        aa = alpha_a*F/rt
-        bb = alpha_c*F/rt
-        eta = p1 - p2 - ocp(cs, cc)
-        call power_reg(cs_max() - cs, alpha_a, THETA_REG*cs_max(), gv, dgv)
-        call power_reg(cs, alpha_c, THETA_REG*cs_max(), gs, dgs)
-        pre = F*k_rxn*(cc**alpha_a)
-        i0 = pre*gv*gs
-        di0 = pre*(gs*(-dgv) + gv*dgs)
-        ea = exp(aa*eta)
-        ec = exp(-bb*eta)
-        i = i0*(ea - ec)
-        di_deta = i0*(aa*ea + bb*ec)
-        di(IC) = alpha_a*i/cc - di_deta*(rt/F)/cc      ! includes dU/dc of the Nernst term
-        di(ICS) = di0*(ea - ec) - di_deta*ocp_slope(cs)
-        di(IP1) = di_deta
-        di(IP2) = -di_deta
-    end subroutine rate_derivs_exact
 
     ! =============================== corrected-mode time step ===============================
     ! Corrected mode is solved in log variables (docs/model.md section 10): column IC holds
@@ -856,12 +891,17 @@ contains
         Rr(IC,nj) = -Fv(1,nj-1); A(IC,:,nj) = -dFa(1,:,nj-1); B(IC,:,nj) = -dFb(1,:,nj-1)
         Rr(IP1,nj) = Fv(2,nj-1) - Ia; A(IP1,:,nj) = dFa(2,:,nj-1); B(IP1,:,nj) = dFb(2,:,nj-1)
         Rr(IP2,nj) = Fv(3,nj-1); A(IP2,:,nj) = dFa(3,:,nj-1); B(IP2,:,nj) = dFb(3,:,nj-1)
-        ! the S column: fixed outside the cathode, the particles at s..nj
+        ! the S column: fixed outside the cathode, the particles at s..nj (the uniform model; with
+        ! crystals it stays fixed everywhere and xtal_newton adds the reaction)
         do j = 1, nj
             Rr(ICS,j) = x(ICS,j) - xold(ICS,j)
             B(ICS,:,j) = 0.0_dp
             B(ICS,ICS,j) = 1.0_dp
         end do
+        if (crystal) then
+            G = -Rr
+            return
+        end if
         do j = s, nj
             call lrate(x(:,j), i, di)
             Rr(IC,j) = Rr(IC,j) - spec_a*i*dx(j)/F
@@ -931,6 +971,10 @@ contains
         logical, intent(out) :: ok
         real(dp) :: c_old(NV,nj), lam, upd, prev, raw
         integer :: k, st
+        if (crystal) then
+            call xtal_newton(h, ok)
+            return
+        end if
         c_old = c
         ok = .false.
         prev = huge(1.0_dp)
@@ -953,18 +997,161 @@ contains
         c = c_old
     end subroutine newton_step
 
+    subroutine xtal_rows(l, dt, xcold, Rc, Bc, Dc_, Ac)
+        !! Crystal l's rows without the reaction (diffusion_rows in Python): storage plus the net outward
+        !! diffusive flux of each control volume, and the tridiagonal dR/ds.
+        integer, intent(in) :: l
+        real(dp), intent(in) :: dt, xcold(nj_crystal)
+        real(dp), intent(out) :: Rc(nj_crystal), Bc(nj_crystal), Dc_(nj_crystal), Ac(nj_crystal)
+        real(dp) :: th(nj_crystal), dth(nj_crystal), gx(nj_crystal-1), Jf(nj_crystal-1), csm
+        integer :: q, nc
+        nc = nj_crystal
+        csm = cs_max()
+        do q = 1, nc
+            th(q) = sigm(xc(q,l))
+            dth(q) = th(q)*sigm(-xc(q,l))
+            Rc(q) = csm*xtal_V(q)*(th(q) - sigm(xcold(q)))/dt
+            Bc(q) = csm*xtal_V(q)*dth(q)/dt
+        end do
+        do q = 1, nc - 1
+            gx(q) = D_c*csm*xtal_A(q)/xtal_h
+            Jf(q) = -gx(q)*(th(q+1) - th(q))
+        end do
+        Dc_ = 0.0_dp; Ac = 0.0_dp
+        do q = 1, nc - 1
+            Rc(q) = Rc(q) + Jf(q)
+            Bc(q) = Bc(q) + gx(q)*dth(q)
+            Dc_(q) = -gx(q)*dth(q+1)
+        end do
+        do q = 2, nc
+            Rc(q) = Rc(q) - Jf(q-1)
+            Bc(q) = Bc(q) + gx(q-1)*dth(q)
+            Ac(q) = -gx(q-1)*dth(q-1)
+        end do
+    end subroutine xtal_rows
+
+    subroutine xtal_newton(h, ok)
+        !! One backward-Euler step with crystals, solved by the condensed Newton iteration (see
+        !! CrystalModel.newton_step in Python): each iteration solves the stacked crystal systems for the
+        !! update and the three surface responses to the electrode's (u, phi1, phi2), folds them into the
+        !! electrode's diagonal blocks, solves the electrode, and back-substitutes. c and xc are updated
+        !! on success.
+        real(dp), intent(in) :: h
+        logical, intent(out) :: ok
+        integer :: nc, ntot, k, l, j, q, kk, fl, st
+        real(dp) :: c_old(NV,nj), xc_old(nj_crystal,nl), lam, upd, prev, raw, mx, th
+        real(dp) :: y(NV), i, di(NV), w, sgn(3), gcpl(3,nl), Jce(3,nl), sc
+        real(dp) :: Rc(nj_crystal), Bc(nj_crystal), Dq(nj_crystal), Aq(nj_crystal)
+        real(dp) :: A1(1,1,nj_crystal*nl), B1(1,1,nj_crystal*nl), D1(1,1,nj_crystal*nl)
+        real(dp) :: rhs(1,nj_crystal*nl,0:3), sol(1,nj_crystal*nl,0:3), dxc(nj_crystal,nl)
+        nc = nj_crystal
+        ntot = nc*nl
+        sgn = [-1.0_dp/F, 1.0_dp, -1.0_dp]           ! reaction sign in rows IC, IP1, IP2
+        c_old = c
+        xc_old = xc
+        ok = .false.
+        prev = huge(1.0_dp)
+        do k = 1, newton_max_iter
+            call lel_assemble(c, c_old, h, i_app)
+            rhs = 0.0_dp
+            do l = 1, nl
+                j = s + l
+                y = c(:,j)
+                y(ICS) = xc(nc,l)
+                call lrate(y, i, di)
+                w = a_x*dx(j)
+                do fl = 1, 3
+                    G(fl,j) = G(fl,j) - (w*i)*sgn(fl)
+                    B(fl,1:3,j) = B(fl,1:3,j) + (w*sgn(fl))*di(1:3)
+                    gcpl(fl,l) = (w*di(ICS))*sgn(fl)
+                    Jce(fl,l) = xtal_AR*di(fl)/F
+                end do
+                call xtal_rows(l, h, xc_old(:,l), Rc, Bc, Dq, Aq)
+                Rc(nc) = Rc(nc) + xtal_AR*i/F
+                Bc(nc) = Bc(nc) + xtal_AR*di(ICS)/F
+                do q = 1, nc
+                    sc = abs(Bc(q))
+                    if (sc == 0.0_dp) sc = 1.0_dp
+                    A1(1,1,(l-1)*nc+q) = Aq(q)/sc
+                    B1(1,1,(l-1)*nc+q) = Bc(q)/sc
+                    D1(1,1,(l-1)*nc+q) = Dq(q)/sc
+                    rhs(1,(l-1)*nc+q,0) = -Rc(q)/sc
+                    if (q == nc) then
+                        do kk = 1, 3
+                            rhs(1,(l-1)*nc+q,kk) = -Jce(kk,l)/sc
+                        end do
+                    end if
+                end do
+            end do
+            do kk = 0, 3
+                call band_solve(1, ntot, A1, B1, D1, rhs(:,:,kk), sol(:,:,kk), st)
+                if (st /= BAND_OK) exit
+            end do
+            if (st /= BAND_OK) exit
+            ! condense the crystals into the electrode's diagonal blocks
+            do l = 1, nl
+                j = s + l
+                do fl = 1, 3
+                    do kk = 1, 3
+                        B(fl,kk,j) = B(fl,kk,j) + gcpl(fl,l)*sol(1,l*nc,kk)
+                    end do
+                    G(fl,j) = G(fl,j) - gcpl(fl,l)*sol(1,l*nc,0)
+                end do
+            end do
+            call equilibrate()
+            call band_solve(NV, nj, A, B, Dm, G, dc, st)
+            if (st /= BAND_OK) exit
+            do l = 1, nl
+                j = s + l
+                do q = 1, nc
+                    dxc(q,l) = sol(1,(l-1)*nc+q,0) + sol(1,(l-1)*nc+q,1)*dc(1,j) &
+                               + sol(1,(l-1)*nc+q,2)*dc(2,j) + sol(1,(l-1)*nc+q,3)*dc(3,j)
+                end do
+            end do
+            lam = lbounded(dc)
+            mx = maxval(abs(dxc))
+            if (mx > 2.0_dp) lam = min(lam, 2.0_dp/mx)
+            ! divergence is judged on the damped electrode update: near theta = 0 or 1 a linearized
+            ! log-odds update of the crystals is legitimately huge, and through the condensation it also
+            ! inflates the undamped electrode update; the step limit scales both down
+            raw = lam*maxval(abs(dc))
+            c = c + lam*dc
+            xc = xc + lam*dxc
+            upd = 0.0_dp
+            do j = 1, nj
+                upd = max(upd, exp(c(IC,j))*abs(dc(IC,j)), abs(dc(IP1,j)), abs(dc(IP2,j)))
+            end do
+            do l = 1, nl
+                do q = 1, nc
+                    th = sigm(xc(q,l))
+                    upd = max(upd, th*sigm(-xc(q,l))*abs(dxc(q,l)))
+                end do
+            end do
+            if (.not. ieee_is_finite(raw) .or. raw > 1.0e3_dp) exit
+            if (lam == 1.0_dp .and. converged(upd, prev)) then
+                ok = .true.
+                return
+            end if
+            prev = upd
+        end do
+        c = c_old
+        xc = xc_old
+    end subroutine xtal_newton
+
     subroutine advance(dt, t_done, stopped, ok, check, vlo, vhi)
         !! Advance by dt at the current i_app. Newton failures halve the sub-step (down to 1e-10 s, at
         !! most 200 times per step; after each success it doubles again); with `check`, a sub-step that
         !! crosses a voltage cutoff by more than 0.1 mV is halved, so the step ends within 0.1 mV of the
-        !! cutoff (see driver.advance in Python). On giving up, c is the state at the start of the step.
+        !! cutoff (see driver.advance in Python). A cc discharge ends at vlo, a charge at vhi. On giving up
+        !! (ok = .false.), c is the last converged sub-step and t_done the time advanced to it.
         real(dp), intent(in) :: dt, vlo, vhi
         logical, intent(in) :: check
         real(dp), intent(out) :: t_done
         logical, intent(out) :: stopped, ok
         real(dp), parameter :: min_dt = 1.0e-10_dp, event_dv = 1.0e-4_dp, event_min_dt = 1.0e-12_dp
         integer, parameter :: max_failures = 200
-        real(dp) :: hh, vv, mg, c_save(NV,nj), c_begin(NV,nj)
+        real(dp) :: hh, vv, mg, c_save(NV,nj)
+        real(dp) :: xc_save(nj_crystal,nl)
         integer :: failures
         logical :: good
         t_done = 0.0_dp
@@ -972,16 +1159,17 @@ contains
         failures = 0
         stopped = .false.
         ok = .true.
-        c_begin = c
         do while (t_done < dt)
             hh = min(hh, dt - t_done)
             c_save = c
+            xc_save = xc
             call newton_step(hh, good)
             if (.not. good) then
                 failures = failures + 1
                 if (hh/2 < min_dt .or. failures >= max_failures) then
                     ok = .false.
-                    c = c_begin
+                    c = c_save
+                    xc = xc_save
                     return
                 end if
                 hh = hh/2
@@ -989,10 +1177,17 @@ contains
             end if
             if (check) then
                 vv = cell_voltage()
-                mg = min(vv - vlo, vhi - vv)
+                if (i_app > 0) then
+                    mg = vv - vlo
+                else if (i_app < 0) then
+                    mg = vhi - vv
+                else
+                    mg = min(vv - vlo, vhi - vv)
+                end if
                 if (mg < 0.0_dp) then
                     if (mg < -event_dv .and. hh/2 >= event_min_dt) then
                         c = c_save
+                        xc = xc_save
                         hh = hh/2
                         cycle
                     end if
@@ -1011,8 +1206,13 @@ contains
         !! solved: electrolyte below 1e-3*c_bulk anywhere, or particles within 1e-3 of full or empty.
         real(dp) :: cmin, thmin, thmax
         cmin = c_bulk*exp(minval(c(IC,:)))
-        thmin = sigm(minval(c(ICS,s:nj)))
-        thmax = sigm(maxval(c(ICS,s:nj)))
+        if (crystal) then                        ! the crystal surfaces, where the reaction is
+            thmin = sigm(minval(xc(nj_crystal,:)))
+            thmax = sigm(maxval(xc(nj_crystal,:)))
+        else
+            thmin = sigm(minval(c(ICS,s:nj)))
+            thmax = sigm(maxval(c(ICS,s:nj)))
+        end if
         if (cmin < 1.0e-3_dp*c_bulk) then
             limit_reason = 'electrolyte_depleted'
         else if (thmax > 1.0_dp - 1.0e-3_dp) then

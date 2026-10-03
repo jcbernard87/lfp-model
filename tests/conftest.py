@@ -19,8 +19,16 @@ def _exe(env_name, default):
 def run_native(tmp_path):
     """Run a compiled implementation on the default input with overrides; return the output path."""
 
-    def _run(exe, *, C_rate=1.0, mode="faithful", name="out.txt", steps=None):
+    def _run(exe, *, C_rate=1.0, mode="faithful", name="out.txt", steps=None, **extra):
+        """`extra`: further input values (e.g. particle_model='crystal'), set in their namelist group."""
+        from lfp_model.namelist import GROUPS
         text = (ROOT / "input" / "default.nml").read_text()
+        for key, value in extra.items():
+            group = next(g for g, names in GROUPS.items() if key in names)
+            val = f"'{value}'" if isinstance(value, str) else repr(value)
+            text, n = re.subn(rf"^[ \t]*{key}[ \t]*=.*$", f"  {key} = {val}", text, count=1, flags=re.M)
+            if n == 0:
+                text = text.replace(f"&{group}\n", f"&{group}\n  {key} = {val}\n", 1)
         if steps:
             text, n = re.subn(r"steps = '[^']*'", f"steps = '{steps}'", text)
             assert n == 1
