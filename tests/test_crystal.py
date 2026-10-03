@@ -175,11 +175,23 @@ def test_crystal_cycle_completes():
     assert r.exit_reason == "end_of_protocol"
 
 
+def _theta_spread(m, st):
+    """Largest spread of theta inside any one crystal."""
+    th = m.cs(st) / m.cs_max
+    return float(np.max(th.max(axis=1) - th.min(axis=1)))
+
+
 def test_rest_relaxes_monotonically():
     """After a 2C partial discharge the crystal profiles flatten at I = 0; V moves monotonically
-    toward the OCP of the mean theta."""
+    toward the OCP of the mean theta. The flat LFP plateau makes the voltage test weak on its own (it also
+    passes when the crystals have not relaxed, e.g. D_c = 1e-15), so the spread of theta inside the crystals
+    is checked too: it falls during the rest and ends below 1e-3 (3.7e-4 measured)."""
     p = crystal(steps="cc C=2 t=900; rest t=1800")
     r = run(p)
+    m0 = CrystalModel(p)
+    spread0 = _theta_spread(m0, run(crystal(steps="cc C=2 t=900")).final_state)
+    spread = _theta_spread(m0, r.final_state)
+    assert spread < spread0 and spread < 1e-3, (spread0, spread)
     a = r.array
     v = a[a[:, 7] == 2][:, 1]
     dv = np.diff(v)

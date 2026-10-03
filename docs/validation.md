@@ -1,6 +1,13 @@
 # Validation
 
-All numbers below were measured before deviation D-9 was applied to corrected mode, except the test results, which are re-run on every change. D-9 halves the active volume fraction, so per-area quantities (currents, a) change, but none of the checks depend on it. All numbers were measured on macOS arm64 (gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5, bandsolver 0.1.1) on 2026-09-27; the D-14/D-15 checks and effects on 2026-09-28. The corrected-mode rows of section 3 and the D-16 effects were re-measured for v0.3.0 (log variables, model.md §10) on 2026-09-29, with bandsolver 0.1.2. The public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
+When each number was measured (all on macOS arm64: gfortran 14.2, Apple clang 16, Python 3.13, numpy 2.5):
+
+- **2026-09-27**, bandsolver 0.1.1, before deviation D-9: sections 1–4, except as listed below. D-9 halves the active volume fraction, so per-area quantities (currents, a) changed after it; none of the checks depend on it.
+- **2026-09-28**: the D-14/D-15 checks and their effects.
+- **2026-09-29**, for v0.3.0 (log variables, model.md §10): the corrected-mode rows of section 3 and the D-16 effects. The Fortran and C++ programs used bandsolver 0.1.2; the Python environment still had bandsolver 0.1.1.
+- **2026-09-29**, bandsolver 0.1.2: section 6 (crystal model), except the rest row (2026-10-03).
+
+Test results are re-run on every change: the public checks run in CI (`pytest`) and recompute everything; no result files are stored in this repository.
 
 ## 1. Reproduction of the original research code (private)
 
@@ -79,7 +86,7 @@ Measured on 2026-09-29 (same platform as above, bandsolver 0.1.2).
 | Time order (2C, Δt = 1 … 0.125 s) and electrode mesh order (26 … 201 nodes) | 1 and 2 (asserted in the tests) |
 | Crystal nodes (sphere, D_c = 8 × 10⁻¹⁴, 2C): capacity to 2.5 V vs 81 nodes | +1.2 × 10⁻³ (11 nodes), +2.9 × 10⁻⁴ (21), +5.9 × 10⁻⁵ (41) equivalents |
 | Small D_c = 10⁻¹⁷ at 1C | ends at `cutoff_low` |
-| Rest after a 2C partial discharge | voltage relaxes monotonically; Φ₁ − Φ₂ ends within 2 mV of the OCP of the mean θ |
+| Rest after a 2C partial discharge (900 s), then 1800 s at I = 0 | voltage relaxes monotonically (by 0.13 mV); Φ₁ − Φ₂ ends within 2.1 µV of the OCP of the mean θ; the largest θ spread inside a crystal falls from 0.999 to 3.7 × 10⁻⁴ (the test asserts < 10⁻³, which D_c = 10⁻¹⁵ fails at 0.27) |
 | Protocol cycle (2C discharge, rest, 1C charge to 4.0 V, CV to C/20, rest), D_c = 10⁻¹² | completes (the default D_c also completes; its CV hold lasts 1251 s) |
 | CC-CV charge to the default V_max = 4.2 V, default D_c (Fortran, C++; `test_crystal_cccv_to_default_vmax`) | completes; every CV row within 10⁻⁶ V of 4.2 V (the CV hold starts with the crystal surfaces at θ ≈ 10⁻⁸) |
 | D_c = 10⁻¹⁷, 2C and 5C charge with a 4.2 V hold (Fortran, C++) | the crystals cannot sustain the hold: both stop identically with `particles_empty`; no off-setpoint CV state is accepted |
