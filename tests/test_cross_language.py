@@ -198,3 +198,45 @@ def test_crystal_cv_never_accepts_off_setpoint(fortran_exe, cpp_exe, run_native,
             np.testing.assert_allclose(cv[:, 1], 4.2, atol=1e-6)
         outs[which] = out.read_text().splitlines()
     assert [x[:-16] for x in outs["fortran"]] == [x[:-16] for x in outs["cpp"]]
+
+
+# ------------------------------------------------------------------ driver: cutoffs and failures
+@pytest.mark.parametrize("which", ["python", "fortran", "cpp"])
+def test_discharge_ignores_its_upper_bound(fortran_exe, cpp_exe, run_native, tmp_path, which):
+    """A discharge ends at Vmin only: an upper bound below the starting voltage does not stop it
+    (the drivers applied both bounds to every cc step and stopped it at once as cutoff_high)."""
+    steps = "cc C=1 Vmax=3.0"
+    if which == "python":
+        r = run(Params(mode="corrected", steps=steps))
+        assert r.exit_reason == "cutoff_low"
+        out = tmp_path / "py.txt"
+        r.write(out)
+    else:
+        exe = fortran_exe if which == "fortran" else cpp_exe
+        if exe is None:
+            pytest.skip(f"{which} not built")
+        out = run_native(exe, mode="corrected", steps=steps, name=f"{which}_bound.txt")
+    _, v = read_tv(out)
+    assert v[-1, 1] == pytest.approx(2.5, abs=1e-4)          # columns after State: time, voltage, ...
+
+
+@pytest.mark.parametrize("which", ["python", "fortran", "cpp"])
+def test_a_physical_limit_keeps_the_progress_of_its_last_step(fortran_exe, cpp_exe, run_native, tmp_path, which):
+    """When a step cannot be completed (here the particles fill at 5C), the exit row is the last converged
+    sub-step, inside the time step (the drivers reported the state at its start, a whole number of dt)."""
+    steps = "cc C=5 Vmin=0.5"
+    p = Params(mode="corrected", steps=steps)
+    if which == "python":
+        r = run(p)
+        assert r.exit_reason == "particles_full"
+        out = tmp_path / "py.txt"
+        r.write(out)
+    else:
+        exe = fortran_exe if which == "fortran" else cpp_exe
+        if exe is None:
+            pytest.skip(f"{which} not built")
+        out = run_native(exe, mode="corrected", steps=steps, name=f"{which}_limit.txt")
+    _, v = read_tv(out)
+    t_h = v[-1, 0]                                           # printed in hours to 5 decimals
+    grid_h = round(t_h * 3600.0 / p.dt) * p.dt / 3600.0      # the nearest whole number of steps
+    assert abs(t_h - grid_h) > 2e-5

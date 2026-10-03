@@ -2,12 +2,13 @@
 
 ## 0.4.0 (unreleased)
 
-A crystal scale in corrected mode; the uniform model and faithful mode are unchanged (their output is byte-identical to 0.3.0).
+A crystal scale in corrected mode; faithful mode is unchanged, and the uniform model's output is byte-identical to 0.3.0 except in the two driver cases fixed below.
 
 - **Crystal model** (`particle_model = 'crystal'`, docs/model.md §12): each cathode volume holds a crystal with solid-state diffusion, `crystal_shape` = `'sphere'` (default), `'cylinder'` or `'slab'`, solved together with the electrode by a condensed Newton step. The original's inactive crystal code is not ported (D-8); the α/β phase change is not included.
 - **Inputs:** `particle_model`, `crystal_shape` and `D_c` (default 8 × 10⁻¹⁴ cm²/s, the original's `diff_c`) in `&active`; `nj_crystal` (default 21) in `&cell`.
 - **Notebook** `04_crystal_scale`: profiles inside the crystals, capacity against rate and D_c, the uniform limit and the three shapes.
 - Requires bandsolver 0.1.2.
+- **Driver fixes** (corrected mode, all three languages): a cc discharge ends only at its `Vmin` and a charge only at its `Vmax`, as documented (both bounds were applied, so a step starting beyond the other bound stopped at once as a cutoff); when a time step cannot be solved, the exit row is the last converged sub-step, not the state at the start of the time step (the capacity of the partial step was lost). Found while porting the Zn/MnO₂ model.
 
 ## 0.3.0 (unreleased)
 

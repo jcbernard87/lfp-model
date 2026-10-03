@@ -372,6 +372,12 @@ contains
                 end if
                 i_app = I
                 if (.not. ok) then
+                    ! keep the sub-steps completed before the failure: the limit is judged where it was reached
+                    if (skind(k) /= K_CV .and. h_done > 0.0_dp) then
+                        mAhg = mAhg + 1000.0_dp*(I/mass_area)*h_done/3600.0_dp
+                        time = time + h_done
+                        nsteps_done = nsteps_done + 1
+                    end if
                     call write_row_c(.false., k)
                     exit_reason = limit_reason()
                     nsolve = nsteps_done
@@ -1191,15 +1197,16 @@ contains
         !! Advance by dt at the current i_app. Newton failures halve the sub-step (down to 1e-10 s, at
         !! most 200 times per step; after each success it doubles again); with `check`, a sub-step that
         !! crosses a voltage cutoff by more than 0.1 mV is halved, so the step ends within 0.1 mV of the
-        !! cutoff (see driver.advance in Python). On giving up, c is the state at the start of the step.
+        !! cutoff (see driver.advance in Python). A cc discharge ends at vlo, a charge at vhi. On giving up
+        !! (ok = .false.), c is the last converged sub-step and t_done the time advanced to it.
         real(dp), intent(in) :: dt, vlo, vhi
         logical, intent(in) :: check
         real(dp), intent(out) :: t_done
         logical, intent(out) :: stopped, ok
         real(dp), parameter :: min_dt = 1.0e-10_dp, event_dv = 1.0e-4_dp, event_min_dt = 1.0e-12_dp
         integer, parameter :: max_failures = 200
-        real(dp) :: hh, vv, mg, c_save(NV,nj), c_begin(NV,nj)
-        real(dp) :: xc_save(nj_crystal,nl), xc_begin(nj_crystal,nl)
+        real(dp) :: hh, vv, mg, c_save(NV,nj)
+        real(dp) :: xc_save(nj_crystal,nl)
         integer :: failures
         logical :: good
         t_done = 0.0_dp
@@ -1207,8 +1214,6 @@ contains
         failures = 0
         stopped = .false.
         ok = .true.
-        c_begin = c
-        xc_begin = xc
         do while (t_done < dt)
             hh = min(hh, dt - t_done)
             c_save = c
@@ -1218,8 +1223,8 @@ contains
                 failures = failures + 1
                 if (hh/2 < min_dt .or. failures >= max_failures) then
                     ok = .false.
-                    c = c_begin
-                    xc = xc_begin
+                    c = c_save
+                    xc = xc_save
                     return
                 end if
                 hh = hh/2
@@ -1227,7 +1232,13 @@ contains
             end if
             if (check) then
                 vv = cell_voltage()
-                mg = min(vv - vlo, vhi - vv)
+                if (i_app > 0) then
+                    mg = vv - vlo
+                else if (i_app < 0) then
+                    mg = vhi - vv
+                else
+                    mg = min(vv - vlo, vhi - vv)
+                end if
                 if (mg < 0.0_dp) then
                     if (mg < -event_dv .and. hh/2 >= event_min_dt) then
                         c = c_save
