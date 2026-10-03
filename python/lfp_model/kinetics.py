@@ -108,7 +108,10 @@ def ocp_slope(p: Params, cs):
 
 
 def reaction_derivatives_analytic(p: Params, c, cs, phi1, phi2):
-    """Rate and exact derivatives (d/dc, d/dcs, d/dphi1, d/dphi2); used in corrected mode (fixes D-6)."""
+    """Rate and exact derivatives (d/dc, d/dcs, d/dphi1, d/dphi2) of the c-form equations (fixes D-6).
+
+    Corrected mode solves in log variables (logcore, since 0.3.0); this c-form path is kept as a reference for the
+    tests (the reference residual) and is not used by any run."""
     rt = p.R * p.T
     A_, B_ = p.alpha_a * p.F / rt, p.alpha_c * p.F / rt
     eta = phi1 - phi2 - ocp(p, cs, c)

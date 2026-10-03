@@ -65,7 +65,6 @@ program lfp
     real(dp) :: dplus, dminus                        ! ion diffusivities (corrected mode)
     real(dp) :: L_cath                   ! cathode thickness [cm], from L_cath_um as in the original (24 * 1.0d-4)
     real(dp) :: mass_area, i_1C, vf_AM   ! vf_AM: active volume fraction (eps_AM or f_AM*(1-eps))
-    real(dp), parameter :: THETA_REG = 1.0e-6_dp       ! D-13 regularization threshold
 
     ! ---------------- protocol (corrected mode) ----------------
     integer, parameter :: K_CC = 1, K_CV = 2, K_REST = 3
@@ -725,14 +724,10 @@ contains
     end function rate
 
     subroutine rate_derivs(cc, cs, p1, p2, i, di)
-        !! Rate and finite-difference derivatives w.r.t. (c, phi1, phi2, cs) (D-6).
+        !! Rate and finite-difference derivatives w.r.t. (c, phi1, phi2, cs) (D-6); faithful mode only.
         real(dp), intent(in) :: cc, cs, p1, p2
         real(dp), intent(out) :: i, di(NV)
         real(dp) :: h
-        if (.not. faithful) then
-            call rate_derivs_exact(cc, cs, p1, p2, i, di)
-            return
-        end if
         h = fd_step
         i = rate(cc, cs, p1, p2)
         if (cc <= h) then
@@ -748,56 +743,6 @@ contains
         di(IP1) = (rate(cc, cs, p1 + h, p2) - rate(cc, cs, p1 - h, p2))/(2.0_dp*h)
         di(IP2) = (rate(cc, cs, p1, p2 + h) - rate(cc, cs, p1, p2 - h))/(2.0_dp*h)
     end subroutine rate_derivs
-
-    real(dp) function ocp_slope(cs)
-        !! dU/dcs [V cm3/mol]
-        real(dp), intent(in) :: cs
-        real(dp) :: th, dth, du
-        th = (cs/(rho/M))/(M*Q_th*1000.0_dp*lit36/F)
-        dth = 1.0_dp/((rho/M)*(M*Q_th*1000.0_dp*lit36/F))
-        du = ocp_c(2)*(-ocp_c(3))/(1.0_dp + (-(ocp_c(3)*th) + ocp_c(4))**2) &
-           - ocp_c(5)*(-ocp_c(6))/(1.0_dp + (-(ocp_c(6)*th) + ocp_c(7))**2)
-        ocp_slope = du*dth
-    end function ocp_slope
-
-    subroutine power_reg(x, alpha, delta, g, dg)
-        !! x**alpha, replaced below delta by a C1 quadratic with g(0) = 0 and a finite slope (D-13).
-        real(dp), intent(in) :: x, alpha, delta
-        real(dp), intent(out) :: g, dg
-        real(dp) :: u
-        if (x < delta) then
-            u = x/delta
-            g = delta**alpha*((2.0_dp - alpha)*u + (alpha - 1.0_dp)*u*u)
-            dg = delta**(alpha - 1.0_dp)*((2.0_dp - alpha) + 2.0_dp*(alpha - 1.0_dp)*u)
-        else
-            g = x**alpha
-            dg = alpha*x**(alpha - 1.0_dp)
-        end if
-    end subroutine power_reg
-
-    subroutine rate_derivs_exact(cc, cs, p1, p2, i, di)
-        !! Rate and exact derivatives w.r.t. (c, phi1, phi2, cs); corrected mode (fixes D-6).
-        real(dp), intent(in) :: cc, cs, p1, p2
-        real(dp), intent(out) :: i, di(NV)
-        real(dp) :: rt, aa, bb, eta, i0, ea, ec, di_deta, gv, dgv, gs, dgs, pre, di0
-        rt = R*T
-        aa = alpha_a*F/rt
-        bb = alpha_c*F/rt
-        eta = p1 - p2 - ocp(cs, cc)
-        call power_reg(cs_max() - cs, alpha_a, THETA_REG*cs_max(), gv, dgv)
-        call power_reg(cs, alpha_c, THETA_REG*cs_max(), gs, dgs)
-        pre = F*k_rxn*(cc**alpha_a)
-        i0 = pre*gv*gs
-        di0 = pre*(gs*(-dgv) + gv*dgs)
-        ea = exp(aa*eta)
-        ec = exp(-bb*eta)
-        i = i0*(ea - ec)
-        di_deta = i0*(aa*ea + bb*ec)
-        di(IC) = alpha_a*i/cc - di_deta*(rt/F)/cc      ! includes dU/dc of the Nernst term
-        di(ICS) = di0*(ea - ec) - di_deta*ocp_slope(cs)
-        di(IP1) = di_deta
-        di(IP2) = -di_deta
-    end subroutine rate_derivs_exact
 
     ! =============================== corrected-mode time step ===============================
     ! Corrected mode is solved in log variables (docs/model.md section 10): column IC holds

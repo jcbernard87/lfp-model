@@ -9,17 +9,17 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
 import bandsolver
 
 from . import kinetics
+from .crystal import CrystalState
 from .model import Assembler, C, CS, P1, P2
 from .params import Params, f32
 from .driver import SolverFailure, limit_reason, run_protocol
-
 HEADER = ("State", "Time", "Voltage", "Equivalence", "Anode_Eta", "anode_exchange_c", "Edge_c0")
 UNITS = ("CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3")
 HEADER_EXTRA = ("Current", "Step", "Li_Nernst")   # corrected mode only
@@ -54,7 +54,7 @@ class Result:
     rows: list = field(default_factory=list)      # (state, t_h, V, equiv, eta_mV, i0_mA, c_edge[, I_mA, step])
     exit_reason: str = ""
     steps: int = 0
-    final_state: Optional[np.ndarray] = None
+    final_state: Optional[Union[np.ndarray, CrystalState]] = None   # CrystalState with particle_model = 'crystal'
 
     @property
     def array(self) -> np.ndarray:

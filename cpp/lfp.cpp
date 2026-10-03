@@ -289,7 +289,6 @@ Params read_input(const std::string& path) {
 
 // ============================== model ==============================
 constexpr int NV = 4, IC = 0, IP1 = 1, IP2 = 2, ICS = 3;
-constexpr double THETA_REG = 1.0e-6;  // D-13 regularization threshold
 
 // ============================== protocol ==============================
 enum class Kind { cc, cv, rest };
@@ -477,43 +476,8 @@ struct Model {
         return i0 * (std::exp(p.alpha_a * p.F * eta / (p.R * p.T)) - std::exp(-(p.alpha_c * p.F * eta / (p.R * p.T))));
     }
     // rate and finite-difference derivatives w.r.t. (c, phi1, phi2, cs) (D-6)
-    double ocp_slope(double cs) const {  // dU/dcs [V cm3/mol]
-        const double th = (cs / (p.rho / p.M)) / (p.M * p.Q_th * 1000.0 * lit36 / p.F);
-        const double dth = 1.0 / ((p.rho / p.M) * (p.M * p.Q_th * 1000.0 * lit36 / p.F));
-        const double x1 = -(ocp_c[2] * th) + ocp_c[3], x2 = -(ocp_c[5] * th) + ocp_c[6];
-        const double du = ocp_c[1] * (-ocp_c[2]) / (1.0 + x1 * x1) - ocp_c[4] * (-ocp_c[5]) / (1.0 + x2 * x2);
-        return du * dth;
-    }
-    // rate and exact derivatives; corrected mode (fixes D-6)
-    // x^alpha, replaced below delta by a C1 quadratic with g(0) = 0 and a finite slope (D-13)
-    static void power_reg(double x, double alpha, double delta, double& g, double& dg) {
-        if (x < delta) {
-            const double u = x / delta;
-            g = std::pow(delta, alpha) * ((2.0 - alpha) * u + (alpha - 1.0) * u * u);
-            dg = std::pow(delta, alpha - 1.0) * ((2.0 - alpha) + 2.0 * (alpha - 1.0) * u);
-        } else {
-            g = std::pow(x, alpha);
-            dg = alpha * std::pow(x, alpha - 1.0);
-        }
-    }
-    void rate_derivs_exact(double c, double cs, double p1, double p2, double& i, double di[NV]) const {
-        const double rt = p.R * p.T, aa = p.alpha_a * p.F / rt, bb = p.alpha_c * p.F / rt;
-        const double eta = p1 - p2 - ocp(cs, c);
-        double gv, dgv, gs, dgs;
-        power_reg(cs_max() - cs, p.alpha_a, THETA_REG * cs_max(), gv, dgv);
-        power_reg(cs, p.alpha_c, THETA_REG * cs_max(), gs, dgs);
-        const double pre = p.F * p.k_rxn * std::pow(c, p.alpha_a);
-        const double i0 = pre * gv * gs, di0 = pre * (gs * -dgv + gv * dgs);
-        const double ea = std::exp(aa * eta), ec = std::exp(-bb * eta);
-        i = i0 * (ea - ec);
-        const double di_deta = i0 * (aa * ea + bb * ec);
-        di[IC] = p.alpha_a * i / c - di_deta * (rt / p.F) / c;  // includes dU/dc of the Nernst term
-        di[ICS] = di0 * (ea - ec) - di_deta * ocp_slope(cs);
-        di[IP1] = di_deta;
-        di[IP2] = -di_deta;
-    }
+    // rate and finite-difference derivatives (D-6); faithful mode only
     void rate_derivs(double c, double cs, double p1, double p2, double& i, double di[NV]) const {
-        if (!faithful) { rate_derivs_exact(c, cs, p1, p2, i, di); return; }
         const double h = p.fd_step;
         i = rate(c, cs, p1, p2);
         di[IC] = c <= h ? (rate(c + h, cs, p1, p2) - i) / h

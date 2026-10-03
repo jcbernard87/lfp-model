@@ -92,7 +92,7 @@ The public tests compute everything they need. They cover cross-language agreeme
 
 ## Status
 
-Version 0.2.0 (2026-09-28). The original code's inactive crystal-scale (solid-diffusion) submodel is not ported (deviation D-8).
+Versions and changes: [CHANGELOG.md](CHANGELOG.md). Corrected mode has two particle models: uniform particles (the default) and `particle_model = 'crystal'`, with solid diffusion inside the crystals, written fresh. The original code's inactive crystal-scale submodel is not ported (deviation D-8).
 
 ## License and citation
 
