@@ -10,7 +10,7 @@ A crystal scale in corrected mode; faithful mode is unchanged, and the uniform m
 - Requires bandsolver 0.1.2.
 - **Driver fixes** (corrected mode, all three languages): a cc discharge ends only at its `Vmin` and a charge only at its `Vmax`, as documented (both bounds were applied, so a step starting beyond the other bound stopped at once as a cutoff); when a time step cannot be solved, the exit row is the last converged sub-step, not the state at the start of the time step (the capacity of the partial step was lost). Found while porting the Zn/MnO₂ model.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-10-03)
 
 Corrected mode is reformulated so that physical limits are reached smoothly; faithful mode is unchanged (still byte-identical to the original).
 
