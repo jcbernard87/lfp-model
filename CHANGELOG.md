@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-10-03)
 
 A crystal scale in corrected mode; faithful mode is unchanged, and the uniform model's output is byte-identical to 0.3.0 except in the two driver cases fixed below.
 
