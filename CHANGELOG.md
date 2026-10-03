@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-10-03)
 
 Corrected mode is reformulated so that physical limits are reached smoothly; faithful mode is unchanged (still byte-identical to the original).
 
