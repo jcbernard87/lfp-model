@@ -551,6 +551,7 @@ contains
     ! =============================== input ===============================
     subroutine read_input(path)
         character(len=*), intent(in) :: path
+        character(len=256) :: msg
         integer :: u, ios
         logical :: exists
         inquire(file=path, exist=exists)
@@ -559,22 +560,73 @@ contains
             error stop 2
         end if
         open(newunit=u, file=path, status='old', action='read')
-        rewind(u); read(u, nml=cell, iostat=ios);        call check(ios, 'cell')
-        rewind(u); read(u, nml=electrolyte, iostat=ios); call check(ios, 'electrolyte')
-        rewind(u); read(u, nml=active, iostat=ios);      call check(ios, 'active')
-        rewind(u); read(u, nml=constants, iostat=ios);   call check(ios, 'constants')
-        rewind(u); read(u, nml=operation, iostat=ios);   call check(ios, 'operation')
-        rewind(u); read(u, nml=numerics, iostat=ios);    call check(ios, 'numerics')
-        rewind(u); read(u, nml=protocol, iostat=ios);    call check(ios, 'protocol')
-        rewind(u); read(u, nml=output, iostat=ios);      call check(ios, 'output')
+        call check_groups(u)
+        rewind(u); read(u, nml=cell, iostat=ios, iomsg=msg);        call check(ios, 'cell', msg)
+        rewind(u); read(u, nml=electrolyte, iostat=ios, iomsg=msg); call check(ios, 'electrolyte', msg)
+        rewind(u); read(u, nml=active, iostat=ios, iomsg=msg);      call check(ios, 'active', msg)
+        rewind(u); read(u, nml=constants, iostat=ios, iomsg=msg);   call check(ios, 'constants', msg)
+        rewind(u); read(u, nml=operation, iostat=ios, iomsg=msg);   call check(ios, 'operation', msg)
+        rewind(u); read(u, nml=numerics, iostat=ios, iomsg=msg);    call check(ios, 'numerics', msg)
+        rewind(u); read(u, nml=protocol, iostat=ios, iomsg=msg);    call check(ios, 'protocol', msg)
+        rewind(u); read(u, nml=output, iostat=ios, iomsg=msg);      call check(ios, 'output', msg)
         close(u)
     end subroutine read_input
 
-    subroutine check(ios, group)
+    subroutine check_groups(u)
+        !! Every &group in the file must be one of the program's namelist groups, and appear once (a misspelled
+        !! group would otherwise be skipped silently, and only the first of two groups with one name read).
+        integer, intent(in) :: u
+        character(len=12), parameter :: known(8) = [character(len=12) :: 'cell', 'electrolyte', 'active', &
+            'constants', 'operation', 'numerics', 'protocol', 'output']
+        logical :: seen(8)
+        character(len=1024) :: line
+        character(len=64) :: name
+        character(len=1) :: quote
+        integer :: ios, i, j, g
+        seen = .false.
+        rewind(u)
+        do
+            read(u, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            quote = ' '
+            i = 1
+            do while (i <= len_trim(line))
+                if (quote /= ' ') then
+                    if (line(i:i) == quote) quote = ' '
+                else if (line(i:i) == '''' .or. line(i:i) == '"') then
+                    quote = line(i:i)
+                else if (line(i:i) == '!') then
+                    exit
+                else if (line(i:i) == '&') then
+                    j = i + 1
+                    do while (j <= len_trim(line))
+                        if (index('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', line(j:j)) == 0) exit
+                        j = j + 1
+                    end do
+                    name = lower(line(i+1:j-1))
+                    g = findloc(known, name, 1)
+                    if (g == 0) then
+                        write(error_unit,'(A)') 'unknown namelist group &'//trim(name)
+                        error stop 2
+                    end if
+                    if (seen(g)) then
+                        write(error_unit,'(A)') 'namelist group &'//trim(name)//' appears twice'
+                        error stop 2
+                    end if
+                    seen(g) = .true.
+                    i = j - 1
+                end if
+                i = i + 1
+            end do
+        end do
+        rewind(u)
+    end subroutine check_groups
+
+    subroutine check(ios, group, msg)
         integer, intent(in) :: ios
-        character(len=*), intent(in) :: group
+        character(len=*), intent(in) :: group, msg
         if (ios > 0) then
-            write(error_unit,'(A)') 'error reading namelist group &'//group
+            write(error_unit,'(A)') 'error reading namelist group &'//group//': '//trim(msg)
             error stop 2
         end if
         ! ios < 0: group absent, keep defaults

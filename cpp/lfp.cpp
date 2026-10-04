@@ -22,6 +22,7 @@
 #include <limits>
 #include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -266,12 +267,29 @@ Params read_input(const std::string& path) {
     std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}, {"steps", &p.steps},
                                                 {"particle_model", &p.particle_model},
                                                 {"crystal_shape", &p.crystal_shape}};
+    // the groups and their names, as the Fortran program's namelists declare them
+    const std::map<std::string, std::set<std::string>> groups = {
+        {"cell", {"l_cath_um", "l_sep", "nj", "sep_node", "eps", "eps_am", "f_am", "eps_sep", "tau_sep", "bruggeman", "nj_crystal"}},
+        {"electrolyte", {"d", "t_plus", "c_bulk", "z_plus", "z_minus", "kappa_bg"}},
+        {"active", {"sigma", "m", "rho", "q_th", "r_p", "k_rxn", "alpha_a", "alpha_c", "k_li", "c_li_ref", "particle_model", "crystal_shape", "d_c"}},
+        {"constants", {"r", "t", "f"}},
+        {"operation", {"c_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps", "v_min", "v_max"}},
+        {"numerics", {"fd_step", "newton_tol", "newton_max_iter", "mode"}},
+        {"protocol", {"steps", "cycles"}},
+        {"output", {"file", "write_interval"}},
+    };
+    std::set<std::string> seen_groups;
     const std::regex group(R"(&(\w+)([\s\S]*?)/)");
     const std::regex entry(R"((\w+)\s*=\s*('[^']*'|"[^"]*"|[^,\s/]+))");
     for (std::sregex_iterator g(text.begin(), text.end(), group), end; g != end; ++g) {
+        const std::string gname = lower((*g)[1]);
+        const auto gi = groups.find(gname);
+        if (gi == groups.end()) throw std::runtime_error("unknown namelist group &" + gname);
+        if (!seen_groups.insert(gname).second) throw std::runtime_error("namelist group &" + gname + " appears twice");
         const std::string body = (*g)[2];
         for (std::sregex_iterator e(body.begin(), body.end(), entry); e != end; ++e) {
             const std::string name = lower((*e)[1]);
+            if (!gi->second.count(name)) throw std::runtime_error("unknown name '" + name + "' in &" + gname);
             std::string val = (*e)[2];
             if (strs.count(name)) {
                 *strs[name] = (val.front() == '\'' || val.front() == '"') ? val.substr(1, val.size() - 2) : val;
