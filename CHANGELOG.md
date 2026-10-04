@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Output:** the crystal model writes four more columns: the surface and volume-mean θ of the crystals next to the separator and the collector (#16). The uniform output is unchanged.
 - **Input checks:** the Fortran and C++ programs reject an unknown namelist group (they skipped it silently), the C++ program rejects a name in the wrong group (it accepted any group), and all three reject a group that appears twice (Fortran read the first, C++ merged them, Python kept the last). The Fortran program names the offending entry.
 - **Driver** (corrected mode, all three languages): a constant-voltage step proceeds in sub-steps when no current holds the voltage for a whole time step (halving down to 10⁻¹⁰ s, as constant-current steps do). A 4.2 V hold right after a 2C discharge stopped with `particles_empty` and now runs to its current limit (#11).
 

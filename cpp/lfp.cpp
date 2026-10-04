@@ -830,6 +830,11 @@ int main(int argc, char** argv) {
             std::vector<std::string> h2 = {"CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3"};
             if (extended) { h1.push_back("Current"); h1.push_back("Step"); h1.push_back("Li_Nernst");
                           h2.push_back("mA/cm2"); h2.push_back("#"); h2.push_back("mV"); }
+            if (extended && m.crystal)
+                for (const char* name : {"Th_surf_sep", "Th_mean_sep", "Th_surf_col", "Th_mean_col"}) {
+                    h1.push_back(name);
+                    h2.push_back("-");
+                }
             for (auto* h : {&h1, &h2}) {
                 std::string l = fit((*h)[0], 5) + " " + fit((*h)[1], 12) + " " + fit((*h)[2], 12);
                 for (std::size_t k = 3; k < h->size(); ++k) l += " " + fit((*h)[k], 15);
@@ -898,10 +903,24 @@ int main(int argc, char** argv) {
                 if (header) header_lines(true);
                 const char st = m.i_app > 0 ? 'D' : (m.i_app < 0 ? 'C' : 'R');
                 const double eta = li_eta(st);
-                std::fprintf(out, "%5c %s %s %s %s %s %s %s %15d %s\n", st, fixed12(t / 3600.0).c_str(),
+                std::fprintf(out, "%5c %s %s %s %s %s %s %s %15d %s", st, fixed12(t / 3600.0).c_str(),
                              fixed12(cell_voltage()).c_str(), sci15(mAhg * p.M * 3.6 / p.F).c_str(),
                              sci15(eta * 1.0e3).c_str(), sci15(i0_li() * 1.0e3).c_str(), sci15(c_foil()).c_str(),
                              sci15(m.i_app * 1.0e3).c_str(), step, sci15(li_nernst() * 1.0e3).c_str());
+                if (m.crystal) {
+                    // surface and volume-mean theta of the first (separator side) and last (collector side) crystal
+                    const int nc = p.nj_crystal;
+                    const std::size_t last = static_cast<std::size_t>(m.nl - 1) * nc;
+                    double vtot = 0.0, ms = 0.0, mc = 0.0;
+                    for (int j = 0; j < nc; ++j) {
+                        vtot = vtot + m.xtal_V[j];
+                        ms = ms + m.xtal_V[j] * sigm(xc[j]);
+                        mc = mc + m.xtal_V[j] * sigm(xc[last + j]);
+                    }
+                    std::fprintf(out, " %s %s %s %s", sci15(sigm(xc[nc - 1])).c_str(), sci15(ms / vtot).c_str(),
+                                 sci15(sigm(xc[last + nc - 1])).c_str(), sci15(mc / vtot).c_str());
+                }
+                std::fprintf(out, "\n");
             };
             // scale every equation by the largest entry of its row in B (the solution is unchanged)
             auto equilibrate = [&]() {

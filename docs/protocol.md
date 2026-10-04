@@ -44,6 +44,7 @@ In corrected mode `Time_Voltage.txt` has the original seven columns plus:
 | 8 | Current (mA/cm2) | applied current density, positive on discharge |
 | 9 | Step | 1-based index of the step in the expanded list (cycles × steps) |
 | 10 | Li_Nernst (mV) | Nernst potential of the lithium foil, U_Li = (RT/F)·ln(c(0)/c_Li,ref) (D-15) |
+| 11–14 | Th_surf_sep, Th_mean_sep, Th_surf_col, Th_mean_col | crystal model only: θ at the surface and the volume-mean θ of the crystal next to the separator and of the crystal next to the current collector |
 
 Column 3 (Voltage) is the cell voltage against the lithium foil. Column 5 (Anode_Eta) is −η_Li, negative on discharge.
 

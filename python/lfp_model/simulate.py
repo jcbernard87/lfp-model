@@ -23,6 +23,9 @@ HEADER = ("State", "Time", "Voltage", "Equivalence", "Anode_Eta", "anode_exchang
 UNITS = ("CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3")
 HEADER_EXTRA = ("Current", "Step", "Li_Nernst")   # corrected mode only
 UNITS_EXTRA = ("mA/cm2", "#", "mV")
+# crystal model only: surface and volume-mean theta of the crystals next to the separator and the collector
+HEADER_CRYSTAL = ("Th_surf_sep", "Th_mean_sep", "Th_surf_col", "Th_mean_col")
+UNITS_CRYSTAL = ("-", "-", "-", "-")
 
 
 def _fmt_fixed(v: float) -> str:
@@ -33,12 +36,14 @@ def _fmt_sci(v: float) -> str:
     return f"{'NaN':>15}" if math.isnan(v) else f"{v:15.5E}"
 
 
-def format_header(extended: bool = False) -> str:
+def format_header(extended: bool = False, crystal: bool = False) -> str:
     def row(cols):
         # Fortran A<w> right-justifies shorter strings and keeps the leftmost w characters of longer ones
         return (f"{cols[0][:5]:>5} " + " ".join(f"{c[:12]:>12}" for c in cols[1:3]) + " "
                 + " ".join(f"{c[:15]:>15}" for c in cols[3:]))
     h, u = (HEADER + HEADER_EXTRA, UNITS + UNITS_EXTRA) if extended else (HEADER, UNITS)
+    if crystal:
+        h, u = h + HEADER_CRYSTAL, u + UNITS_CRYSTAL
     return row(h) + "\n" + row(u) + "\n"
 
 
@@ -62,7 +67,8 @@ class Result:
 
     def write(self, path) -> None:
         with open(path, "w") as fh:
-            fh.write(format_header(extended=bool(self.rows) and len(self.rows[0]) > 7))
+            n = len(self.rows[0]) if self.rows else 0
+            fh.write(format_header(extended=n > 7, crystal=n > 10))
             for r in self.rows:
                 fh.write(format_row(r[0], r[1:]))
 
@@ -232,7 +238,13 @@ class Stepper:
         return cell_voltage(self.p, self.model.electrode(c), I)
 
     def row(self, t, c, mAhg, I, k):
-        return _row(self.p, t, self.model.electrode(c), mAhg, I, k)
+        r = _row(self.p, t, self.model.electrode(c), mAhg, I, k)
+        if hasattr(c, "xc"):                     # crystal model: theta at the first and last crystal
+            m = self.model
+            th = m.cs(c) / m.cs_max
+            w = m.cm.V / m.cm.V.sum()
+            r = r + (float(th[0, -1]), float(th[0] @ w), float(th[-1, -1]), float(th[-1] @ w))
+        return r
 
     def finite(self, c):
         if hasattr(c, "xc"):

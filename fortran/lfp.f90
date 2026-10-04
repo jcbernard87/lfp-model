@@ -1482,12 +1482,19 @@ contains
     end function cell_voltage
 
     subroutine write_row_c(header, step)
-        !! Corrected-mode output row: the original columns plus the current and the step index.
+        !! Corrected-mode output row: the original columns plus the current and the step index; with the crystal
+        !! model also the surface and volume-mean theta of the crystals next to the separator and the collector.
         logical, intent(in) :: header
         integer, intent(in) :: step
-        real(dp) :: i0_li, eta
+        real(dp) :: i0_li, eta, th(4)
         character(len=1) :: st
-        if (header) then
+        if (header .and. crystal) then
+            write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'State', 'Time', 'Voltage', 'Equivalence', 'Anode_Eta', &
+                'anode_exchange_c', 'Edge_c0', 'Current', 'Step', 'Li_Nernst', 'Th_surf_sep', 'Th_mean_sep', &
+                'Th_surf_col', 'Th_mean_col'
+            write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'CDR', 'hours', 'Volts', 'electron_equivs', 'mV', &
+                'mA/cm2', 'mol/cm3', 'mA/cm2', '#', 'mV', '-', '-', '-', '-'
+        else if (header) then
             write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'State', 'Time', 'Voltage', 'Equivalence', 'Anode_Eta', &
                 'anode_exchange_c', 'Edge_c0', 'Current', 'Step', 'Li_Nernst'
             write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'CDR', 'hours', 'Volts', 'electron_equivs', 'mV', &
@@ -1498,9 +1505,28 @@ contains
         if (i_app < 0) st = 'C'
         i0_li = F*k_Li*(c_foil()**0.5_dp)*(c_Li_ref**0.5_dp)
         eta = li_eta()
-        write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15,1X,ES15.5)') st, time/3600.0_dp, cell_voltage(), &
-            mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c_foil(), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp
+        if (crystal) then
+            th = crystal_thetas()
+            write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15,1X,5(ES15.5,1X))') st, time/3600.0_dp, cell_voltage(), &
+                mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c_foil(), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp, th
+        else
+            write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15,1X,ES15.5)') st, time/3600.0_dp, cell_voltage(), &
+                mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c_foil(), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp
+        end if
     end subroutine write_row_c
+
+    function crystal_thetas() result(th)
+        !! Surface and volume-mean theta of the first (separator side) and last (collector side) crystal.
+        real(dp) :: th(4), vtot, ms, mc
+        integer :: j
+        vtot = 0.0_dp; ms = 0.0_dp; mc = 0.0_dp
+        do j = 1, nj_crystal
+            vtot = vtot + xtal_V(j)
+            ms = ms + xtal_V(j)*sigm(xc(j,1))
+            mc = mc + xtal_V(j)*sigm(xc(j,nl))
+        end do
+        th = [sigm(xc(nj_crystal,1)), ms/vtot, sigm(xc(nj_crystal,nl)), mc/vtot]
+    end function crystal_thetas
 
     subroutine write_row(header)
         logical, intent(in) :: header

@@ -9,6 +9,12 @@ from lfp_model.params import Params
 from lfp_model.simulate import run
 
 
+def _without_li_nernst(lines):
+    """The lines as token lists without the Li_Nernst column (token 9). While c at the foil relaxes back to
+    c_ref it is round-off (~1e-14 mV), whose leading digit differs between the compilers."""
+    return [t[:9] + t[10:] for t in (x.split() for x in lines)]
+
+
 def read_tv(path):
     lines = open(path).read().splitlines()[2:]
     states = [l.split()[0] for l in lines]
@@ -84,11 +90,11 @@ def test_protocol_cycle_all_languages(fortran_exe, cpp_exe, run_native, tmp_path
     """A full discharge / rest / charge / CV / rest cycle agrees across the three implementations."""
     f_out = run_native(fortran_exe, mode="corrected", name="f_cycle.txt", steps=CYCLE)
     c_out = run_native(cpp_exe, mode="corrected", name="c_cycle.txt", steps=CYCLE)
-    # byte-identical except the last column, Li_Nernst = (RT/F) ln(c/c_ref): while c relaxes back to
+    # byte-identical except the Li_Nernst column, (RT/F) ln(c/c_ref): while c relaxes back to
     # c_ref it is round-off (~1e-14 mV), which differs in its leading digit between the compilers
     fl, cl = f_out.read_text().splitlines(), c_out.read_text().splitlines()
     assert len(fl) == len(cl)
-    assert [x[:-16] for x in fl] == [x[:-16] for x in cl]
+    assert _without_li_nernst(fl) == _without_li_nernst(cl)
     nf = np.array([float(x.split()[-1]) for x in fl[2:]])
     nc = np.array([float(x.split()[-1]) for x in cl[2:]])
     np.testing.assert_allclose(nf, nc, rtol=1e-4, atol=1e-9)
@@ -150,7 +156,7 @@ def test_crystal_cycle_all_languages(fortran_exe, cpp_exe, run_native, tmp_path)
     f_out = run_native(fortran_exe, name="fx_cycle.txt", **kw)
     c_out = run_native(cpp_exe, name="cx_cycle.txt", **kw)
     fl, cl = f_out.read_text().splitlines(), c_out.read_text().splitlines()
-    assert len(fl) == len(cl) and [x[:-16] for x in fl] == [x[:-16] for x in cl]
+    assert len(fl) == len(cl) and _without_li_nernst(fl) == _without_li_nernst(cl)
     r = run(Params(mode="corrected", particle_model="crystal", D_c=1.0e-12, steps=CRYSTAL_CYCLE))
     p_out = tmp_path / "px.txt"
     r.write(p_out)
@@ -195,12 +201,12 @@ def test_crystal_cv_never_accepts_off_setpoint(fortran_exe, cpp_exe, run_native,
                          name=f"{which}_cv{C}.txt")
         _, v = read_tv(out)
         if v[-1, 7] != 5:
-            v = v[:-1]                      # a run that stops reports the start-of-step state in its last row
+            v = v[:-1]                      # a run that stops reports where its last step failed
         cv = v[v[:, 7] == 4]
         if len(cv):
             np.testing.assert_allclose(cv[:, 1], 4.2, atol=1e-6)
         outs[which] = out.read_text().splitlines()
-    assert [x[:-16] for x in outs["fortran"]] == [x[:-16] for x in outs["cpp"]]
+    assert _without_li_nernst(outs["fortran"]) == _without_li_nernst(outs["cpp"])
 
 
 # ------------------------------------------------------------------ driver: cutoffs and failures

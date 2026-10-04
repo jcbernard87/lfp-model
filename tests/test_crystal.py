@@ -238,3 +238,18 @@ def test_cccv_hold_after_the_crystal_surfaces_drain():
     r = run(p, max_steps=200)
     assert r.exit_reason == "end_of_protocol" and r.steps < 100, (r.exit_reason, r.steps)
     assert r.array[-1, 1] == pytest.approx(4.2, abs=1e-6)
+
+
+def test_crystal_columns_in_the_output(tmp_path):
+    """The crystal model writes the surface and mean theta of the first and last crystals (#16): on discharge
+    lithium enters at the surface, so the surface is ahead of the mean, and the columns are in the header."""
+    r = run(crystal(steps="cc C=2 t=600"))
+    out = tmp_path / "o.txt"
+    r.write(out)
+    head = out.read_text().splitlines()[0].split()
+    assert head[-4:] == ["Th_surf_sep", "Th_mean_sep", "Th_surf_col", "Th_mean_col"]
+    a = r.array
+    ts_sep, tm_sep, ts_col, tm_col = a[-1, -4:]
+    assert ts_sep > tm_sep > 0 and ts_col > tm_col > 0
+    u = run(Params(mode="corrected", steps="cc C=2 t=600")).array
+    assert u.shape[1] == a.shape[1] - 4                 # the uniform output is unchanged
