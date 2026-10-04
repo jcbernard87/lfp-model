@@ -64,3 +64,10 @@ def test_crystal_keys_read_from_namelist(tmp_path):
                  "&numerics mode = 'corrected' /\n")
     p, _ = load(f)
     assert (p.particle_model, p.crystal_shape, p.D_c, p.nj_crystal) == ("crystal", "slab", 1.0e-13, 11)
+
+
+def test_crystal_example_is_the_default_crystal_model():
+    """input/examples/crystal.nml is the default parameters with particle_model = 'crystal' (#17)."""
+    p, _ = load(ROOT / "input" / "examples" / "crystal.nml")
+    assert p == Params(mode="corrected", particle_model="crystal")
+    assert (p.crystal_shape, p.D_c, p.nj_crystal) == ("sphere", 8.0e-14, 21)
