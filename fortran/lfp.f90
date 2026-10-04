@@ -357,8 +357,7 @@ contains
                 h = dt
                 if (sT(k) >= 0) h = min(dt, sT(k) - t_step)
                 if (skind(k) == K_CV) then
-                    call cv_step(h, sV(k), I, ok)
-                    h_done = h
+                    call cv_advance(h, sV(k), I, ok, h_done)
                     stopped = sImin(k) >= 0 .and. abs(I) <= sImin(k)*i_1C
                     why = 'current_limit'
                 else
@@ -421,6 +420,33 @@ contains
         end if
         nsolve = nsteps_done
     end subroutine run_protocol
+
+    subroutine cv_advance(h, V_set, I, ok, h_done)
+        !! A constant-voltage sub-step: cv_step over h, halved (down to 1e-10 s) while no current holds V_set
+        !! for that long (see driver.cv_advance in Python). On failure, c, xc and I are as on entry and h_done = 0.
+        real(dp), intent(in) :: h, V_set
+        real(dp), intent(inout) :: I
+        logical, intent(out) :: ok
+        real(dp), intent(out) :: h_done
+        real(dp) :: I_guess, c_begin(NV,nj), xc_begin(nj_crystal,nl)
+        I_guess = I
+        c_begin = c
+        xc_begin = xc
+        h_done = h
+        do
+            c = c_begin
+            xc = xc_begin
+            I = I_guess
+            call cv_step(h_done, V_set, I, ok)
+            if (ok) return
+            if (h_done/2 < 1.0e-10_dp) exit
+            h_done = h_done/2
+        end do
+        c = c_begin
+        xc = xc_begin
+        I = I_guess
+        h_done = 0.0_dp
+    end subroutine cv_advance
 
     subroutine cv_step(h, V_set, I, ok)
         !! One constant-voltage time step: find I with V(I) = V_set (see simulate.cv_step in Python).

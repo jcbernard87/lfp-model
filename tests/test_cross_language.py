@@ -240,3 +240,24 @@ def test_a_physical_limit_keeps_the_progress_of_its_last_step(fortran_exe, cpp_e
     t_h = v[-1, 0]                                           # printed in hours to 5 decimals
     grid_h = round(t_h * 3600.0 / p.dt) * p.dt / 3600.0      # the nearest whole number of steps
     assert abs(t_h - grid_h) > 2e-5
+
+
+@pytest.mark.parametrize("which", ["python", "fortran", "cpp"])
+def test_cv_hold_after_a_discharge_proceeds_in_sub_steps(fortran_exe, cpp_exe, run_native, tmp_path, which):
+    """A 4.2 V hold right after a 2C discharge cannot be held for whole 10 s steps at first; it proceeds in
+    sub-steps and ends on the current limit (without sub-stepping it stopped with particles_empty, #11)."""
+    steps = "cc C=2 Vmin=2.5; cv V=4.2 Imin=0.05"
+    p = Params(mode="corrected", steps=steps, n_steps=3600)
+    if which == "python":
+        r = run(p)
+        assert r.exit_reason == "end_of_protocol"
+        out = tmp_path / "py.txt"
+        r.write(out)
+    else:
+        exe = fortran_exe if which == "fortran" else cpp_exe
+        if exe is None:
+            pytest.skip(f"{which} not built")
+        out = run_native(exe, mode="corrected", steps=steps, n_steps=3600, name=f"{which}_cvsub.txt")
+    _, v = read_tv(out)
+    assert v[-1, 1] == pytest.approx(4.2, abs=1e-6)                    # voltage held
+    assert abs(v[-1, 6]) <= 0.05 * p.i_1C * 1e3 * (1 + 1e-9)            # current [mA/cm2] at the limit

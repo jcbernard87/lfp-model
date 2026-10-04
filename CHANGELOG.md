@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Driver** (corrected mode, all three languages): a constant-voltage step proceeds in sub-steps when no current holds the voltage for a whole time step (halving down to 10⁻¹⁰ s, as constant-current steps do). A 4.2 V hold right after a 2C discharge stopped with `particles_empty` and now runs to its current limit (#11).
+
 ## 0.4.0 (2026-10-03)
 
 A crystal scale in corrected mode; faithful mode is unchanged, and the uniform model's output is byte-identical to 0.3.0 except in the two driver cases fixed below.
