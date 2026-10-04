@@ -1,10 +1,11 @@
-import math
 import numpy as np
 import pytest
 
 import bandsolver
-from lfp_model.crystal import CrystalMesh, diffusion_rows
+from lfp_model.crystal import CrystalMesh, CrystalModel, CrystalState, diffusion_rows
 from lfp_model.logcore import sigmoid, logit
+from lfp_model.params import Params
+from lfp_model.simulate import run
 
 
 def _run_flux(k, nc, J=0.05, th0=0.2, dt=0.05, t_end=2.0):
@@ -52,16 +53,16 @@ def test_diffusion_rows_jacobian():
     h = 1e-6
     for j in range(9):
         e = np.zeros_like(xc); e[:, j] = h
-        dR = (diffusion_rows(cm, 8e-14, 0.0228, xc + e, old, 1.0)[0] - diffusion_rows(cm, 8e-14, 0.0228, xc - e, old, 1.0)[0]) / (2 * h)
+        dR = (diffusion_rows(cm, 8e-14, 0.0228, xc + e, old, 1.0)[0]
+              - diffusion_rows(cm, 8e-14, 0.0228, xc - e, old, 1.0)[0]) / (2 * h)
         want = np.zeros_like(xc)
         want[:, j] = B[:, j]
-        if j > 0: want[:, j - 1] = Dn[:, j - 1]
-        if j < 8: want[:, j + 1] = An[:, j + 1]
+        if j > 0:
+            want[:, j - 1] = Dn[:, j - 1]
+        if j < 8:
+            want[:, j + 1] = An[:, j + 1]
         np.testing.assert_allclose(dR, want, rtol=1e-6, atol=1e-6 * np.abs(want).max())
 
-
-from lfp_model.params import Params
-from lfp_model.crystal import CrystalModel, CrystalState
 
 
 def crystal(**kw):
@@ -143,7 +144,6 @@ def test_uniform_limit(D_c):
     assert err < (2e-3 if D_c == 1e-9 else 5e-6), err
 
 
-from lfp_model.simulate import run
 
 CYCLE = "cc C=2 Vmin=2.5; rest t=600; cc C=-1 Vmax=4.0; cv V=4.0 Imin=0.05; rest t=600"
 

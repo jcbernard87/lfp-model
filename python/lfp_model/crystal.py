@@ -1,7 +1,8 @@
 """Crystal scale: solid diffusion in the crystals, coupled to the electrode (docs/model.md section 12).
 
 Corrected mode with particle_model = 'crystal'. Each interior cathode node carries one crystal
-(slab, cylinder or sphere, k = 0, 1, 2), discretized by vertex-centred finite volumes in r. The unknown at every crystal node is the log-odds s = ln(theta/(1-theta)),
+(slab, cylinder or sphere, k = 0, 1, 2), discretized by vertex-centred finite volumes in r. The unknown at every
+crystal node is the log-odds s = ln(theta/(1-theta)),
 and the flux is Fick's law in theta with a constant D_c. Each Newton iteration condenses the
 crystals into the electrode's diagonal blocks (the nmc111-model agglomerate pattern).
 """

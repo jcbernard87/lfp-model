@@ -65,7 +65,8 @@ def exchange_current_and_slope(p: Params, c, cs):
     with np.errstate(invalid="ignore", divide="ignore"):
         pre = p.F * p.k_rxn * (c ** p.alpha_a)
         gv, gs = (cs_max(p) - cs) ** p.alpha_a, cs ** p.alpha_c
-        return pre * gv * gs, pre * (-p.alpha_a * gs * (cs_max(p) - cs) ** (p.alpha_a - 1.0) + p.alpha_c * gv * cs ** (p.alpha_c - 1.0))
+        return pre * gv * gs, pre * (-p.alpha_a * gs * (cs_max(p) - cs) ** (p.alpha_a - 1.0)
+                                     + p.alpha_c * gv * cs ** (p.alpha_c - 1.0))
 
 
 def reaction_rate(p: Params, c, cs, phi1, phi2):

@@ -118,8 +118,10 @@ def test_fortran_crystal_matches_python(fortran_exe, run_native, tmp_path, shape
 
 BAD_CRYSTAL_INPUTS = [
     ("&active particle_model = 'crystals' /\n&numerics mode = 'corrected' /\n", "particle_model must be one of"),
-    ("&active particle_model = 'crystal', crystal_shape = 'cube' /\n&numerics mode = 'corrected' /\n", "crystal_shape must be one of"),
-    ("&cell nj_crystal = 3 /\n&active particle_model = 'crystal' /\n&numerics mode = 'corrected' /\n", "nj_crystal must be at least 4"),
+    ("&active particle_model = 'crystal', crystal_shape = 'cube' /\n&numerics mode = 'corrected' /\n",
+     "crystal_shape must be one of"),
+    ("&cell nj_crystal = 3 /\n&active particle_model = 'crystal' /\n&numerics mode = 'corrected' /\n",
+     "nj_crystal must be at least 4"),
     ("&active particle_model = 'crystal' /\n&numerics mode = 'faithful' /\n", "needs mode='corrected'"),
 ]
 
@@ -189,7 +191,8 @@ def test_crystal_cv_never_accepts_off_setpoint(fortran_exe, cpp_exe, run_native,
     steps = f"cc C={C} Vmin=2.5; rest t=100; cc C=-{C} Vmax=4.2; cv V=4.2 Imin=0.01; rest t=600"
     outs = {}
     for which, exe in (("fortran", fortran_exe), ("cpp", cpp_exe)):
-        out = run_native(exe, mode="corrected", particle_model="crystal", D_c=1.0e-17, steps=steps, name=f"{which}_cv{C}.txt")
+        out = run_native(exe, mode="corrected", particle_model="crystal", D_c=1.0e-17, steps=steps,
+                         name=f"{which}_cv{C}.txt")
         _, v = read_tv(out)
         if v[-1, 7] != 5:
             v = v[:-1]                      # a run that stops reports the start-of-step state in its last row

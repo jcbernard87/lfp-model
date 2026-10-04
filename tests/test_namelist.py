@@ -59,7 +59,8 @@ def test_crystal_inputs_rejected(kw, msg):
 
 def test_crystal_keys_read_from_namelist(tmp_path):
     f = tmp_path / "c.nml"
-    f.write_text("&cell nj_crystal = 11 /\n&active particle_model = 'crystal', crystal_shape = 'slab', D_c = 1.0d-13 /\n"
+    f.write_text("&cell nj_crystal = 11 /\n"
+                 "&active particle_model = 'crystal', crystal_shape = 'slab', D_c = 1.0d-13 /\n"
                  "&numerics mode = 'corrected' /\n")
     p, _ = load(f)
     assert (p.particle_model, p.crystal_shape, p.D_c, p.nj_crystal) == ("crystal", "slab", 1.0e-13, 11)
