@@ -264,3 +264,31 @@ def test_cv_hold_after_a_discharge_proceeds_in_sub_steps(fortran_exe, cpp_exe, r
     _, v = read_tv(out)
     assert v[-1, 1] == pytest.approx(4.2, abs=1e-6)                    # voltage held
     assert abs(v[-1, 6]) <= 0.05 * p.i_1C * 1e3 * (1 + 1e-9)            # current [mA/cm2] at the limit
+
+
+# ------------------------------------------------------------------ the electrolyte runs out
+@pytest.mark.parametrize("model", ["uniform", "crystal"])
+def test_depleted_electrolyte_runs_to_the_cutoff(fortran_exe, cpp_exe, run_native, tmp_path, model):
+    """A 200 um cathode at 5C exhausts the electrolyte (c falls to about 1e-4 of c_bulk): the discharge still
+    reaches cutoff_low smoothly, salt is conserved to round-off, and the three implementations agree (#13)."""
+    from lfp_model.crystal import CrystalModel
+    from lfp_model.logmodel import LogModel
+    kw = dict(L_cath_um=200, particle_model=model)
+    p = Params(mode="corrected", C_rate=5.0, **kw)
+    m = LogModel(p) if model == "uniform" else CrystalModel(p)
+    x0 = m.initial_state()
+    r = run(p)
+    assert r.exit_reason == "cutoff_low"
+    assert m.conc(r.final_state).min() < 1e-3 * p.c_bulk
+    salt = lambda s_: (m.el.eps_node * m.mesh.dx * m.conc(s_)).sum()
+    assert abs(salt(r.final_state) / salt(x0) - 1.0) < 1e-12
+    p_out = tmp_path / "py.txt"
+    r.write(p_out)
+    sp, vp = read_tv(p_out)
+    for which, exe in (("fortran", fortran_exe), ("cpp", cpp_exe)):
+        if exe is None:
+            continue
+        out = run_native(exe, C_rate=5.0, mode="corrected", name=f"{which}_{model}_dep.txt", **kw)
+        s, v = read_tv(out)
+        assert s == sp and v.shape == vp.shape
+        np.testing.assert_allclose(v, vp, rtol=1e-5, atol=1e-9)

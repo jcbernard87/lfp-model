@@ -131,18 +131,20 @@ def test_condensed_jacobian_matches_fd():
     assert (np.abs(J - Jfd) / scale).max() < 1e-5
 
 
-@pytest.mark.parametrize("D_c", [1e-9, 1e-6])
-def test_uniform_limit(D_c):
-    """Fast solid diffusion: the crystal model's voltage approaches the uniform-particle model's."""
+def test_uniform_limit():
+    """Fast solid diffusion: the crystal model's voltage approaches the uniform-particle model's, with an error
+    that falls exactly as 1/D_c (max|dV| D_c = 3.32e-14 V cm2/s measured at D_c = 1e-9, 1e-8 and 1e-6)."""
     from lfp_model.simulate import run
     a_u = run(Params(mode="corrected", C_rate=1.0), max_steps=1800).array
-    r_c = run(crystal(C_rate=1.0, D_c=D_c), max_steps=1800)
-    assert isinstance(r_c.final_state, CrystalState)
-    a_c = r_c.array
-    n = min(len(a_u), len(a_c))
-    err = np.abs(a_c[:n, 1] - a_u[:n, 1]).max()
-    assert err < (2e-3 if D_c == 1e-9 else 5e-6), err
-
+    err = {}
+    for D_c in (1e-9, 1e-6):
+        r_c = run(crystal(C_rate=1.0, D_c=D_c), max_steps=1800)
+        assert isinstance(r_c.final_state, CrystalState)
+        a_c = r_c.array
+        n = min(len(a_u), len(a_c))
+        err[D_c] = np.abs(a_c[:n, 1] - a_u[:n, 1]).max()
+    assert err[1e-6] < 1e-7, err
+    assert err[1e-9] / err[1e-6] == pytest.approx(1000.0, rel=0.01), err
 
 
 CYCLE = "cc C=2 Vmin=2.5; rest t=600; cc C=-1 Vmax=4.0; cv V=4.0 Imin=0.05; rest t=600"
@@ -223,3 +225,16 @@ def test_crystal_electrode_mesh_second_order():
     assert np.all((orders > 1.8) & (orders < 2.6)), orders
 
 
+
+
+def test_cccv_hold_after_the_crystal_surfaces_drain():
+    """A fast charge from mostly empty crystals drains their surfaces (theta ~ 1e-8), then a 4.2 V hold must
+    converge: Newton divergence is judged on the damped electrode update. With the undamped update the hold
+    crawls (more than 400 steps instead of 33). A cheap Python counterpart of the native
+    test_crystal_cccv_to_default_vmax (#9)."""
+    from lfp_model import kinetics
+    p = crystal(cs_init=0.1 * kinetics.cs_max(crystal()), n_steps=7200,
+                steps="cc C=-2 Vmax=4.2; cv V=4.2 Imin=0.5")
+    r = run(p, max_steps=200)
+    assert r.exit_reason == "end_of_protocol" and r.steps < 100, (r.exit_reason, r.steps)
+    assert r.array[-1, 1] == pytest.approx(4.2, abs=1e-6)

@@ -218,3 +218,37 @@ def test_ocp_thermodynamic_tails():
         se = np.log(t / (1 - t))
         assert kin.ocp(0.0, se) - kin._fit(t)[0] == pytest.approx(rtf * np.log(1e-4 / t), rel=1e-3)
         assert kin._fit(1 - t)[0] - kin.ocp(0.0, -se) == pytest.approx(rtf * np.log(1e-4 / t), rel=1e-3)
+
+
+def test_sigmoid_keeps_precision_at_the_limits():
+    """theta = sigmoid(s) and 1 - theta = sigmoid(-s) keep full relative precision far into the tails (a
+    0.5 (1 + tanh(s/2)) form rounds theta to exactly 0 below s ~ -37). The Fortran and C++ programs use the same
+    form, 1/(1 + e^-|s|) and e^-|s|/(1 + e^-|s|) (sigm in lfp.f90, lfp.cpp)."""
+    import math
+    from lfp_model.logcore import sigmoid
+    for s in (-40.0, -200.0, -700.0):
+        assert sigmoid(s) == pytest.approx(math.exp(s), rel=1e-12)
+        assert sigmoid(-s) == 1.0
+    assert sigmoid(0.0) == 0.5
+
+
+def test_newton_converges_quadratically():
+    """From a perturbed iterate of a mid-discharge step, the scaled update of the uniform corrected model falls
+    quadratically (measured 2.2e-2, 2.6e-4, 3.5e-8, 6e-15; b/a^2 = 0.5): the analytic Jacobian is exact where
+    it is used, not only at the single state that check_jacobian tests."""
+    from lfp_model.logcore import P1, P2, S, U
+    p = Params(mode="corrected", C_rate=1.0, newton_tol=1e-14)
+    old = run(p, max_steps=600).final_state
+    m = LogModel(p)
+    sol = m.newton_step(old, p.dt, p.i_app)
+    rng = np.random.default_rng(3)
+    x = sol.copy()
+    x[:, P1:P2 + 1] += 1e-3 * rng.standard_normal((p.nj, 2))
+    x[:, U] += 1e-2 * rng.standard_normal(p.nj)
+    x[:, S] += 1e-2 * rng.standard_normal(p.nj)
+    hist = []
+    m.newton_step(old, p.dt, p.i_app, start=x, history=hist)
+    assert len(hist) <= 6 and hist[-1] < 1e-12
+    for a, b in zip(hist, hist[1:]):
+        if a > 1e-7:
+            assert b < 10.0 * a ** 2
