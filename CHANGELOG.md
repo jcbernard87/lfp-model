@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-05)
 
 - **Example input** `input/examples/crystal.nml`: the default parameters with the crystal model (#17).
 - **Output:** the crystal model writes four more columns: the surface and volume-mean θ of the crystals next to the separator and the collector (#16). The uniform output is unchanged.
 - **Input checks:** the Fortran and C++ programs reject an unknown namelist group (they skipped it silently), the C++ program rejects a name in the wrong group (it accepted any group), and all three reject a group that appears twice (Fortran read the first, C++ merged them, Python kept the last). The Fortran program names the offending entry.
 - **Driver** (corrected mode, all three languages): a constant-voltage step proceeds in sub-steps when no current holds the voltage for a whole time step (halving down to 10⁻¹⁰ s, as constant-current steps do). A 4.2 V hold right after a 2C discharge stopped with `particles_empty` and now runs to its current limit (#11).
+- **Tests and CI:** uniform-limit scaling, sigmoid precision, quadratic Newton convergence, a minimal input, electrolyte depletion, a Python crystal CC-CV (#7, #9, #12–#15); ruff lint and a required Windows job (#19, #20); tests read text files as UTF-8.
 
 ## 0.4.0 (2026-10-03)
 
