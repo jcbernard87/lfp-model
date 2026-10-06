@@ -284,7 +284,7 @@ Params read_input(const std::string& path) {
         {"output", {"file", "write_interval"}},
     };
     std::set<std::string> seen_groups;
-    const std::regex group(R"(&(\w+)([\s\S]*?)/)");
+    const std::regex group(R"(&(\w+)((?:'[^']*'|"[^"]*"|[^/'"])*)/)");   // a '/' inside quotes is text
     const std::regex entry(R"((\w+)\s*=\s*('[^']*'|"[^"]*"|[^,\s/]+))");
     for (std::sregex_iterator g(text.begin(), text.end(), group), end; g != end; ++g) {
         const std::string gname = lower((*g)[1]);

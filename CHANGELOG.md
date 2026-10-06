@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fix:** a '/' inside a quoted value (an output path with directories) ended the namelist group in the C++ and Python readers, so the C++ program stopped with "cannot write" and Python lost the value. Both now treat quoted text as text, as the Fortran program does.
 - **Adaptive time stepping** (corrected mode, all three languages; #18): `dt_mode = 'adaptive'` chooses each time step from backward Euler's local error estimate (linear predictor), against `rtol` and `atol`, within `dt_min` and `dt_max`; steps land on the output times. The default stays `dt_mode = 'fixed'`, so existing inputs give the same output.
 
 ## 0.5.0 (2026-10-05)
