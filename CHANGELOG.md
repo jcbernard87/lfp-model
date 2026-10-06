@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Adaptive time stepping** (corrected mode, all three languages; #18): `dt_mode = 'adaptive'` chooses each time step from backward Euler's local error estimate (linear predictor), against `rtol` and `atol`, within `dt_min` and `dt_max`; steps land on the output times. The default stays `dt_mode = 'fixed'`, so existing inputs give the same output.
+
 ## 0.5.0 (2026-10-05)
 
 - **Example input** `input/examples/crystal.nml`: the default parameters with the crystal model (#17).

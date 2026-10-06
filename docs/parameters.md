@@ -69,4 +69,7 @@ These are the default values in the original research code. The source line (`L�
 | `cs_init` | 1.0 × 10⁻⁵ | mol/cm³ | L82 | θ₀ ≈ 4.4 × 10⁻⁴ (fully delithiated) |
 | `tmax`, `Numbertimesteps` | 36 000 s, 36 000 | | L35 | Δt = 1 s |
 | FD reaction-derivative steps | 10⁻⁶ (absolute) | | L1061–L1064 | **[D-6]** |
+| (new) `dt_mode` | `'fixed'` | | — | corrected mode (#18): `'adaptive'` chooses the time step from the local error estimate (docs/protocol.md) |
+| (new) `rtol`, `atol` | 10⁻⁴, 10⁻⁴ | | — | adaptive: local error tolerances on the state (ln c, potentials in V, log-odds of θ) |
+| (new) `dt_min`, `dt_max` | 10⁻⁶, 0 | s | — | adaptive: step bounds; `dt_max = 0` means `write_interval` |
 | anode kinetic constant | 10⁻⁶ | | L241 | Li-foil exchange current, output only |

@@ -33,7 +33,7 @@ def run_native(tmp_path):
             text, n = re.subn(r"steps = '[^']*'", f"steps = '{steps}'", text)
             assert n == 1
         text = re.sub(r"C_rate = [0-9.]+", f"C_rate = {C_rate}", text)
-        text = re.sub(r"mode = '\w+'", f"mode = '{mode}'", text)
+        text = re.sub(r"^(\s*)mode = '\w+'", lambda m: f"{m.group(1)}mode = '{mode}'", text, flags=re.M)
         text = text.replace("file = 'Time_Voltage.txt'", f"file = '{name}'")
         nml = tmp_path / f"in_{name}.nml"
         nml.write_text(text)

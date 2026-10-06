@@ -234,6 +234,11 @@ class Stepper:
     def newton_step(self, c, h, I):
         return self.model.newton_step(c, h, I, backend=self.backend)
 
+    @staticmethod
+    def flat(c):
+        """The state as one vector, for the adaptive driver's error estimate."""
+        return np.concatenate((c.x.ravel(), c.xc.ravel())) if hasattr(c, "xc") else c.ravel()
+
     def voltage(self, c, I):
         return cell_voltage(self.p, self.model.electrode(c), I)
 
