@@ -26,9 +26,14 @@ def run_native(tmp_path):
         for key, value in extra.items():
             group = next(g for g, names in GROUPS.items() if key in names)
             val = f"'{value}'" if isinstance(value, str) else repr(value)
-            text, n = re.subn(rf"^[ \t]*{key}[ \t]*=.*$", f"  {key} = {val}", text, count=1, flags=re.M)
-            if n == 0:
+            # the value wherever the name is set (also inside a comma-separated line), else a new entry in its
+            # group, else a new group (a name later on the same line would otherwise override a new line)
+            text, n = re.subn(rf"(?<!\w){key}[ \t]*=[ \t]*('[^']*'|[^,\s/!]+)", lambda m: f"{key} = {val}", text,
+                              count=1)
+            if n == 0 and f"&{group}\n" in text:
                 text = text.replace(f"&{group}\n", f"&{group}\n  {key} = {val}\n", 1)
+            elif n == 0:
+                text += f"&{group}\n  {key} = {val}\n/\n"
         if steps:
             text, n = re.subn(r"steps = '[^']*'", f"steps = '{steps}'", text)
             assert n == 1

@@ -217,12 +217,16 @@ def _row(p: Params, t: float, c: np.ndarray, mAhg: float, I: float, step: int):
 
 
 class Stepper:
-    """The corrected model (log variables; uniform particles or crystals) as a stepper for lfp_model.driver."""
+    """The corrected model (log variables; uniform particles, crystals or agglomerates) as a stepper for
+    lfp_model.driver."""
 
     def __init__(self, p: Params, *, backend: str):
         if p.particle_model == "crystal":
             from .crystal import CrystalModel
             self.model = CrystalModel(p)
+        elif p.particle_model == "agglomerate":
+            from .agglomerate import AgglomerateModel
+            self.model = AgglomerateModel(p)
         else:
             from .logmodel import LogModel
             self.model = LogModel(p)
@@ -237,7 +241,11 @@ class Stepper:
     @staticmethod
     def flat(c):
         """The state as one vector, for the adaptive driver's error estimate."""
-        return np.concatenate((c.x.ravel(), c.xc.ravel())) if hasattr(c, "xc") else c.ravel()
+        if hasattr(c, "xc"):
+            return np.concatenate((c.x.ravel(), c.xc.ravel()))
+        if hasattr(c, "ca"):
+            return np.concatenate((c.c.ravel(), c.ca.ravel()))
+        return c.ravel()
 
     def voltage(self, c, I):
         return cell_voltage(self.p, self.model.electrode(c), I)
@@ -249,11 +257,18 @@ class Stepper:
             th = m.cs(c) / m.cs_max
             w = m.cm.V / m.cm.V.sum()
             r = r + (float(th[0, -1]), float(th[0] @ w), float(th[-1, -1]), float(th[-1] @ w))
+        elif hasattr(c, "ca"):                   # agglomerate model: theta at the first and last agglomerate
+            m = self.model
+            th = m.cs(c) / m.cs_max
+            w = m.dV / m.dV.sum()
+            r = r + (float(th[0, -1]), float(th[0] @ w), float(th[-1, -1]), float(th[-1] @ w))
         return r
 
     def finite(self, c):
         if hasattr(c, "xc"):
             return bool(np.all(np.isfinite(c.x)) and np.all(np.isfinite(c.xc)))
+        if hasattr(c, "ca"):
+            return bool(np.all(np.isfinite(c.c)) and np.all(np.isfinite(c.ca)))
         return bool(np.all(np.isfinite(c)))
 
     def limit_reason(self, x):

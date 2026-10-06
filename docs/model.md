@@ -212,3 +212,46 @@ This is the exact Newton step of the coupled system (quadratic convergence). The
 **Limits.** The exit reasons `particles_full` and `particles_empty` refer to the crystal surfaces.
 
 **Uniform limit.** For D_c → ∞ the crystal profiles flatten and the model becomes the uniform-particle model; the difference in cell voltage falls like 1/D_c ([validation.md](validation.md) §6).
+
+## 13. Agglomerate scale (corrected mode, `particle_model = 'agglomerate'`)
+
+With `particle_model = 'agglomerate'` each cathode volume holds porous spherical agglomerates (radius `R_agg`, porosity `eps_agg`) of uniform crystals, a double-porosity model with one reaction description. It is nmc111-model's corrected agglomerate model (its `docs/model.md` §6) with LiFePO₄'s kinetics; the agglomerate inputs are in the `&agglomerate` group. It complements the crystal scale of §12: there the crystals have solid diffusion and sit directly in the electrode; here they are uniform and sit inside agglomerates with their own pore electrolyte and solid conduction.
+
+**Electrode scale** (the macro-pores between agglomerates): unknowns c, Φ₁, Φ₂. Transport is the uniform model's corrected form (§10). The electrode has no reaction term of its own. Each cathode volume holds agglomerates, which exchange salt, ionic current and electronic current with it through their surfaces:
+
+| Row | Cathode volume Δx |
+|---|---|
+| c | ε ∂c/∂t Δx = −(N₊,E − N₊,W) − s_agg N₊,in Δx |
+| Φ₁ | i₁,E − i₁,W = −s_agg i₁,in Δx |
+| Φ₂ | i₂,E − i₂,W = −s_agg i₂,in Δx |
+
+s_agg = 3 v_agg/R_agg is the agglomerate surface per electrode volume, with v_agg = v_AM/(1 − ε_agg) and v_AM = f_AM(1 − ε) the active-material volume fraction; ε + v_agg ≤ 1 is required (with the defaults it is exactly 1: the agglomerates fill the solid volume). The `*,in` values are the fluxes into an agglomerate through r = R, taken from the agglomerate's own discretization, so the exchange conserves salt, lithium and charge exactly. The electrode's fourth unknown (c_s) is held fixed; the crystals carry the solid state.
+
+**Agglomerate scale** (radius R, spherical finite volumes with zero-volume center and surface nodes): unknowns c, Φ₁, Φ₂, c_s.
+
+| Row | Interior (volume ΔV, face areas 4πr²) |
+|---|---|
+| c | ε_agg ∂c/∂t ΔV = −Σ A N₊ + a_x i_n/F ΔV |
+| Φ₁ | Σ A i₁ = −a_x i_n ΔV, with i₁ = −(1−ε_agg)σ_agg ∂Φ₁/∂r |
+| Φ₂ | Σ A i₂ = +a_x i_n ΔV |
+| c_s | (1−ε_agg) ∂c_s/∂t = −a_x i_n/F, at every node |
+
+- The pores carry the electrode's electrolyte: N₊ and i₂ are the full dilute-solution expressions with D₊, D₋ scaled by ε_agg/τ_agg, τ_agg = ε_agg^−½.
+- a_x = 3(1−ε_agg)/R_p: the agglomerates are made of uniform crystals of radius `R_p`.
+- Butler–Volmer kinetics use the crystal θ, the local pore electrolyte and the local potentials, as in §10 (OCP fit with its tails and Nernst term).
+- **Center:** zero gradient of c, Φ₁ and Φ₂.
+- **Surface:** c, Φ₁ and Φ₂ equal the electrode's values at that node. The surface electrolyte therefore sees depletion, and the agglomerate solid is in electronic contact with the electrode solid.
+
+**Solving: a condensed, fully coupled Newton step.** Each backward-Euler step is solved to convergence (scaled update ≤ 10⁻¹⁰). In every Newton iteration:
+
+1. The agglomerates of all cathode volumes are assembled and stacked into one block-tridiagonal system, which is factored once. It is solved for the Newton update at fixed surface values, δx_a⁰, and for its response Z to the three surface values (c, Φ₁, Φ₂).
+2. The agglomerate sources are linearized in the agglomerate unknowns next to the surface, and the response δx_a = δx_a⁰ + Z δx_e is substituted. This adds a 3 × 3 term to each cathode node's diagonal block and a term to its right-hand side, so the electrode system stays block-tridiagonal and is solved with BAND.
+3. The agglomerate updates follow by back-substitution, and one step length, limited as in §10, is applied to both scales.
+
+The result is the Newton step of the full two-scale system: it converges quadratically, and after convergence the uncondensed residuals of both scales vanish (tests/test_agglomerate.py).
+
+**Limits.** Inputs `tau_agg` and `sigma_agg` ≤ 0 (the defaults) mean ε_agg^−½ and `sigma`. The exit reasons `particles_full` and `particles_empty` refer to the crystals in the agglomerates, and `electrolyte_depleted` also to the agglomerate pores.
+
+**Uniform limit.** With fast transport and conduction inside the agglomerates and a vanishing pore volume (whose electrolyte the uniform model does not have), the model becomes the uniform-particle model: at 5C the voltage difference is 2 × 10⁻⁹ V at ε_agg = 10⁻⁶ and 5 × 10⁻¹² V at 10⁻⁸. With the default agglomerates (5 µm, ε_agg = 0.2) the voltage stays within 0.4 mV of the uniform model's at 5C; a poorly conducting agglomerate solid (σ_agg = 10⁻⁶ S/cm) costs 39 mV.
+
+**Relaxation.** On the flat LiFePO₄ plateau, crystals at different θ inside an agglomerate are at nearly the same potential, so a θ spread left by a discharge does not relax during a rest (the pore electrolyte does); NMC111's sloped OCP relaxes it.

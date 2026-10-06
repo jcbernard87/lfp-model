@@ -14,6 +14,7 @@ program lfp
     use, intrinsic :: iso_fortran_env, only: dp => real64, sp => real32, error_unit
     use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite, ieee_value, ieee_quiet_nan, ieee_positive_inf
     use bandsolver_kernel, only: band_solve, BAND_OK, PIVOT_LEGACY
+    use bandsolver_factor, only: band_factorization, band_factor, band_factor_solve
     implicit none
 
     integer, parameter :: NV = 4                  ! unknowns per node
@@ -26,6 +27,9 @@ program lfp
     character(len=16) :: particle_model = 'uniform'   ! corrected mode: 'uniform' particles or 'crystal' (solid diffusion)
     character(len=16) :: crystal_shape = 'sphere'     ! crystal model: 'sphere', 'cylinder' or 'slab'
     real(dp) :: D_c = 8.0e-14_dp                   ! crystal model: solid diffusivity [cm2/s]
+    integer  :: nja = 21                           ! agglomerate model: nodes along an agglomerate radius
+    real(dp) :: R_agg = 5.0e-4_dp, eps_agg = 0.2_dp   ! agglomerate model: radius [cm] and porosity
+    real(dp) :: tau_agg = -1.0_dp, sigma_agg = -1.0_dp   ! agglomerate pores' tortuosity, solid conductivity (<= 0: derived)
     real(dp) :: eps = 0.5_dp, eps_AM = 0.8_dp, eps_sep = 0.39_dp, tau_sep = 4.0_dp, bruggeman = -0.5_dp
     real(dp) :: f_AM = 0.8_dp          ! corrected mode: active fraction of the solid phase (D-9)
     real(dp) :: D = 2.0e-6_dp, t_plus = 0.25_dp, c_bulk = 1.0e-3_dp, z_plus = 1.0_dp, z_minus = -1.0_dp
@@ -57,6 +61,7 @@ program lfp
     namelist /constants/ R, T, F
     namelist /operation/ C_rate, phi1_init, phi2_init, cs_init, t_max, n_steps, V_min, V_max
     namelist /numerics/ fd_step, newton_tol, newton_max_iter, mode, dt_mode, rtol, atol, dt_min, dt_max
+    namelist /agglomerate/ nja, R_agg, eps_agg, tau_agg, sigma_agg
     namelist /protocol/ steps, cycles
     namelist /output/ file, write_interval
 
@@ -85,10 +90,19 @@ program lfp
     integer  :: nl                                ! crystals: one per cathode volume, electrode nodes s+1 .. nj-1
     real(dp) :: xtal_h, xtal_AR, a_x              ! crystal mesh step, surface area R_p**k, crystal area per volume
     real(dp), allocatable :: xtal_V(:), xtal_A(:) ! node volumes and face areas (vertex-centred)
-    real(dp), allocatable :: xc(:,:)              ! crystal log-odds (nj_crystal, nl)
+    real(dp), allocatable :: xc(:,:)              ! crystal log-odds (nxc, nl); the agglomerates' unknowns (NV*nja, nl)
+    integer  :: nxc                               ! rows of xc: nj_crystal (crystals) or NV*nja (agglomerates)
+
+    ! ---------------- agglomerate model (corrected mode; docs/model.md section 13) ----------------
+    logical  :: agglom                            ! particle_model = 'agglomerate'
+    real(dp) :: ag_ax, ag_v, ag_s                 ! crystal area per agglomerate volume; agglomerate volume fraction
+                                                  ! and agglomerate surface per electrode volume
+    real(dp), allocatable :: ag_r(:), ag_dr(:), ag_dV(:), ag_area(:), ag_g(:), ag_gs(:)   ! radial grid
+    real(dp), allocatable :: cag(:,:,:), ag_A(:,:,:), ag_B(:,:,:), ag_D(:,:,:), ag_rhs(:,:)  ! working state, blocks
 
     ! ---------------- time loop ----------------
     integer  :: ounit, nsolve
+    integer  :: il, ia                            ! loop indices of the main program
     real(dp) :: time, dt, mAhg
     character(len=1) :: state
     character(len=64) :: exit_reason
@@ -103,8 +117,17 @@ program lfp
     open(newunit=ounit, file=trim(file), status='replace', action='write')
 
     allocate(c(NV,nj), dc(NV,nj), A(NV,NV,nj), B(NV,NV,nj), Dm(NV,NV,nj), G(NV,nj))
-    allocate(xc(nj_crystal, nl))
+    allocate(xc(nxc, nl))
     xc = log((cs_init/cs_max())/(1.0_dp - cs_init/cs_max()))
+    if (agglom) then                           ! the agglomerates: u = 0, phi1, phi2, the crystals' log-odds
+        do il = 1, nl
+            do ia = 1, nja
+                xc(NV*(ia-1) + IC, il) = 0.0_dp
+                xc(NV*(ia-1) + IP1, il) = phi1_init
+                xc(NV*(ia-1) + IP2, il) = phi2_init
+            end do
+        end do
+    end if
     c(IC,:) = c_bulk
     c(IP1,:) = phi1_init
     c(IP2,:) = phi2_init
@@ -349,7 +372,7 @@ contains
         adaptive = trim(dt_mode) == 'adaptive'
         h_max = write_interval
         if (dt_max > 0.0_dp) h_max = dt_max
-        allocate(c0(NV,nj), xc0(nj_crystal,nl), cp(NV,nj), xcp(nj_crystal,nl))
+        allocate(c0(NV,nj), xc0(nxc,nl), cp(NV,nj), xcp(nxc,nl))
 
         I = 0.0_dp
         if (skind(1) == K_CC) I = sC(1)*i_1C
@@ -482,7 +505,7 @@ contains
             end do
         end do
         do l = 1, nl
-            do q = 1, nj_crystal
+            do q = 1, nxc
                 pred = xc0(q,l) + (h/hp)*(xc0(q,l) - xcp(q,l))
                 s = s + ((xc(q,l) - pred)/(atol + rtol*abs(xc(q,l))))**2
                 n = n + 1
@@ -498,7 +521,7 @@ contains
         real(dp), intent(inout) :: I
         logical, intent(out) :: ok
         real(dp), intent(out) :: h_done
-        real(dp) :: I_guess, c_begin(NV,nj), xc_begin(nj_crystal,nl)
+        real(dp) :: I_guess, c_begin(NV,nj), xc_begin(nxc,nl)
         I_guess = I
         c_begin = c
         xc_begin = xc
@@ -524,7 +547,7 @@ contains
         real(dp), intent(inout) :: I
         logical, intent(out) :: ok
         real(dp), parameter :: tol = 1.0e-9_dp
-        real(dp) :: c_start(NV,nj), xc_start(nj_crystal,nl), fI, grow, a, b, fa, fb
+        real(dp) :: c_start(NV,nj), xc_start(nxc,nl), fI, grow, a, b, fa, fb
         logical :: have_a, have_b, good
         integer :: it, side
         c_start = c
@@ -603,7 +626,7 @@ contains
 
     subroutine cv_feval(h, V_set, c_start, xc_start, Itry, fval, success)
         !! f(I) = V - V_set after one Newton step from c_start; +/-inf if the step fails.
-        real(dp), intent(in) :: h, V_set, c_start(NV,nj), xc_start(nj_crystal,nl), Itry
+        real(dp), intent(in) :: h, V_set, c_start(NV,nj), xc_start(nxc,nl), Itry
         real(dp), intent(out) :: fval
         logical, intent(out) :: success
         c = c_start
@@ -639,6 +662,7 @@ contains
         rewind(u); read(u, nml=numerics, iostat=ios, iomsg=msg);    call check(ios, 'numerics', msg)
         rewind(u); read(u, nml=protocol, iostat=ios, iomsg=msg);    call check(ios, 'protocol', msg)
         rewind(u); read(u, nml=output, iostat=ios, iomsg=msg);      call check(ios, 'output', msg)
+        rewind(u); read(u, nml=agglomerate, iostat=ios, iomsg=msg); call check(ios, 'agglomerate', msg)
         close(u)
     end subroutine read_input
 
@@ -646,9 +670,9 @@ contains
         !! Every &group in the file must be one of the program's namelist groups, and appear once (a misspelled
         !! group would otherwise be skipped silently, and only the first of two groups with one name read).
         integer, intent(in) :: u
-        character(len=12), parameter :: known(8) = [character(len=12) :: 'cell', 'electrolyte', 'active', &
-            'constants', 'operation', 'numerics', 'protocol', 'output']
-        logical :: seen(8)
+        character(len=12), parameter :: known(9) = [character(len=12) :: 'cell', 'electrolyte', 'active', &
+            'constants', 'operation', 'numerics', 'protocol', 'output', 'agglomerate']
+        logical :: seen(9)
         character(len=1024) :: line
         character(len=64) :: name
         character(len=1) :: quote
@@ -801,8 +825,9 @@ contains
         integer :: k, j
         real(dp) :: rr, rW, rE
         character(len=16) :: buf
-        if (trim(particle_model) /= 'uniform' .and. trim(particle_model) /= 'crystal') then
-            write(error_unit,'(A)') 'particle_model must be one of (''uniform'', ''crystal''), got '''// &
+        if (trim(particle_model) /= 'uniform' .and. trim(particle_model) /= 'crystal' .and. &
+            trim(particle_model) /= 'agglomerate') then
+            write(error_unit,'(A)') 'particle_model must be one of (''uniform'', ''crystal'', ''agglomerate''), got '''// &
                 trim(particle_model)//''''
             error stop 2
         end if
@@ -816,7 +841,10 @@ contains
             error stop 2
         end select
         crystal = trim(particle_model) == 'crystal'
+        agglom = trim(particle_model) == 'agglomerate'
         nl = 0
+        nxc = nj_crystal
+        if (agglom) call agg_setup()
         if (.not. crystal) return
         if (faithful) then
             write(error_unit,'(A)') 'particle_model=''crystal'' needs mode=''corrected'''
@@ -1054,7 +1082,7 @@ contains
             B(ICS,:,j) = 0.0_dp
             B(ICS,ICS,j) = 1.0_dp
         end do
-        if (crystal) then
+        if (crystal .or. agglom) then
             G = -Rr
             return
         end if
@@ -1131,6 +1159,10 @@ contains
             call xtal_newton(h, ok)
             return
         end if
+        if (agglom) then
+            call agg_newton(h, ok)
+            return
+        end if
         c_old = c
         ok = .false.
         prev = huge(1.0_dp)
@@ -1152,6 +1184,228 @@ contains
         end do
         c = c_old
     end subroutine newton_step
+
+    ! =============================== agglomerate model (docs/model.md section 13) ===============================
+    subroutine agg_setup()
+        !! Validate the agglomerate inputs and build the radial grid (see agglomerate.py in Python): spherical
+        !! finite volumes with zero-volume center and surface nodes; one agglomerate per cathode volume, electrode
+        !! nodes s+1 .. nj-1. The state is held in xc (NV*nja rows); cag is its (NV, nja, nl) working copy.
+        real(dp) :: hr, tau_a, sig_a, r_W, r_E, rf, pi
+        integer :: j
+        character(len=16) :: buf
+        if (faithful) then
+            write(error_unit,'(A)') 'particle_model=''agglomerate'' needs mode=''corrected'''
+            error stop 2
+        end if
+        if (nja < 4) then
+            write(buf,'(I0)') nja
+            write(error_unit,'(A)') 'nja must be at least 4, got '//trim(buf)
+            error stop 2
+        end if
+        ag_v = vf_AM/(1.0_dp - eps_agg)
+        if (eps + ag_v > 1.0_dp + 1.0e-12_dp) then
+            write(error_unit,'(A)') 'porosity + agglomerate volume fraction exceed 1'
+            error stop 2
+        end if
+        ag_s = 3.0_dp*ag_v/R_agg
+        ag_ax = 3.0_dp*(1.0_dp - eps_agg)/R_p
+        tau_a = tau_agg
+        if (tau_a <= 0.0_dp) tau_a = eps_agg**(-0.5_dp)
+        sig_a = sigma_agg
+        if (sig_a <= 0.0_dp) sig_a = sigma
+        pi = acos(-1.0_dp)
+        nl = nj - 1 - s
+        nxc = NV*nja
+        allocate(ag_r(nja), ag_dr(nja), ag_dV(nja), ag_area(nja-1), ag_g(nja-1), ag_gs(nja-1))
+        hr = R_agg/real(nja - 2, dp)
+        ag_r = 0.0_dp
+        do j = 2, nja - 1
+            ag_r(j) = hr*real(j - 1, dp) - hr/2.0_dp
+        end do
+        ag_r(nja) = R_agg
+        ag_dr = 0.0_dp; ag_dr(2:nja-1) = hr
+        do j = 1, nja
+            r_W = ag_r(j) - ag_dr(j)/2.0_dp; r_E = ag_r(j) + ag_dr(j)/2.0_dp
+            if (j == 1) then
+                r_W = 0.0_dp; r_E = 0.0_dp
+            end if
+            if (j == nja) then
+                r_W = R_agg; r_E = R_agg
+            end if
+            ag_dV(j) = 4.0_dp*pi/3.0_dp*(r_E**3 - r_W**3)
+        end do
+        do j = 1, nja - 1                          ! face j joins nodes j and j+1
+            rf = ag_r(j) + ag_dr(j)/2.0_dp
+            if (j == 1) rf = 0.0_dp
+            ag_area(j) = 4.0_dp*pi*rf**2
+            ag_g(j) = eps_agg/tau_a/((ag_dr(j) + ag_dr(j+1))/2.0_dp)
+            ag_gs(j) = (1.0_dp - eps_agg)*sig_a/((ag_dr(j) + ag_dr(j+1))/2.0_dp)
+        end do
+        allocate(cag(NV,nja,nl), ag_A(NV,NV,nja*nl), ag_B(NV,NV,nja*nl), ag_D(NV,NV,nja*nl), ag_rhs(NV,nja*nl))
+    end subroutine agg_setup
+
+    subroutine agg_assemble(h, cold)
+        !! Stacked blocks ag_A, ag_B, ag_D and G = -R (ag_rhs) of every agglomerate; surface values from c.
+        real(dp), intent(in) :: h, cold(NV,nja,nl)
+        real(dp) :: Fv(3,nja-1), dFa(3,NV,nja-1), dFb(3,NV,nja-1), Rr(NV), i, di(NV), V, cj, cjo, th, tho, csm
+        integer :: l, j, k, q, col, fl
+        csm = cs_max()
+        do l = 1, nl
+            do k = 1, nja - 1
+                call sg_face(cag(:,k,l), cag(:,k+1,l), ag_g(k), ag_gs(k), Fv(:,k), dFa(:,:,k), dFb(:,:,k))
+            end do
+            do j = 1, nja
+                q = (l - 1)*nja + j
+                ag_A(:,:,q) = 0.0_dp; ag_B(:,:,q) = 0.0_dp; ag_D(:,:,q) = 0.0_dp; Rr = 0.0_dp
+                call lrate(cag(:,j,l), i, di)
+                if (j == 1) then
+                    do col = IC, IP2                  ! center: zero gradient
+                        Rr(col) = cag(col,2,l) - cag(col,1,l)
+                        ag_B(col,col,q) = -1.0_dp; ag_D(col,col,q) = 1.0_dp
+                    end do
+                else if (j == nja) then
+                    do col = IC, IP2                  ! surface: the electrode's u, phi1, phi2
+                        Rr(col) = cag(col,nja,l) - c(col, s + l)
+                        ag_B(col,col,q) = 1.0_dp
+                    end do
+                else
+                    V = ag_dV(j)
+                    do fl = 1, 3
+                        Rr(fl) = ag_area(j)*Fv(fl,j) - ag_area(j-1)*Fv(fl,j-1)
+                        ag_B(fl,:,q) = ag_area(j)*dFa(fl,:,j) - ag_area(j-1)*dFb(fl,:,j-1)
+                        ag_D(fl,:,q) = ag_area(j)*dFb(fl,:,j)
+                        ag_A(fl,:,q) = -ag_area(j-1)*dFa(fl,:,j-1)
+                    end do
+                    cj = c_bulk*exp(cag(IC,j,l)); cjo = c_bulk*exp(cold(IC,j,l))
+                    Rr(IC) = Rr(IC) + eps_agg*V*(cj - cjo)/h - ag_ax*i*V/F
+                    ag_B(IC,IC,q) = ag_B(IC,IC,q) + eps_agg*V*cj/h
+                    ag_B(IC,:,q) = ag_B(IC,:,q) - ag_ax*di*V/F
+                    Rr(IP1) = Rr(IP1) + ag_ax*i*V
+                    ag_B(IP1,:,q) = ag_B(IP1,:,q) + ag_ax*di*V
+                    Rr(IP2) = Rr(IP2) - ag_ax*i*V
+                    ag_B(IP2,:,q) = ag_B(IP2,:,q) - ag_ax*di*V
+                end if
+                ! crystals, every node: (1 - eps_agg) cs_max dtheta/dt = -a_x i/F
+                th = sigm(cag(ICS,j,l)); tho = sigm(cold(ICS,j,l))
+                Rr(ICS) = (1.0_dp - eps_agg)*csm*(th - tho)/h + ag_ax*i/F
+                ag_B(ICS,:,q) = ag_ax*di/F
+                ag_B(ICS,ICS,q) = ag_B(ICS,ICS,q) + (1.0_dp - eps_agg)*csm*th*sigm(-cag(ICS,j,l))/h
+                ag_rhs(:,q) = -Rr
+            end do
+        end do
+    end subroutine agg_assemble
+
+    subroutine agg_surface(l, qv, Jq)
+        !! Flux into agglomerate l through r = R: q = (N+, i1, i2), and dq/dx at nodes nja-1 and nja.
+        integer, intent(in) :: l
+        real(dp), intent(out) :: qv(3), Jq(3, 2*NV)
+        real(dp) :: Fv(3), dFa(3,NV), dFb(3,NV)
+        call sg_face(cag(:,nja-1,l), cag(:,nja,l), ag_g(nja-1), ag_gs(nja-1), Fv, dFa, dFb)
+        qv = -Fv
+        Jq(:,1:NV) = -dFa
+        Jq(:,NV+1:2*NV) = -dFb
+    end subroutine agg_surface
+
+    subroutine agg_newton(h, ok)
+        !! One backward-Euler step of length h for both scales, by the condensed Newton iteration (see
+        !! AgglomerateModel.newton_step in Python): each iteration factors the stacked agglomerate systems once,
+        !! solves them for the update and the three surface responses, folds them into the electrode's diagonal
+        !! blocks, solves the electrode, and back-substitutes. c and xc are updated on success.
+        real(dp), intent(in) :: h
+        logical, intent(out) :: ok
+        real(dp) :: c_old(NV,nj), cag_old(NV,nja,nl), lam, sc, w, upd, prev, raw, mx, th
+        real(dp) :: x0(NV,nja*nl), Z(NV,nja*nl,3), E(NV,nja*nl), qv(3), Jq(3,2*NV), dca(NV,nja,nl), Zl(2*NV,3)
+        real(dp) :: x0l(2*NV), rsurf(3,nl), caps(NV)
+        type(band_factorization) :: fac
+        integer :: it, st, k, q, r, l, j, col, nq
+        nq = nja*nl
+        caps = [1.0_dp, 0.1_dp, 0.1_dp, 2.0_dp]
+        cag = reshape(xc, [NV, nja, nl])
+        c_old = c; cag_old = cag
+        ok = .false.
+        prev = huge(1.0_dp)
+        do it = 1, newton_max_iter
+            ! ---- agglomerates: factor once, solve for the update and the three surface responses ----
+            call agg_assemble(h, cag_old)
+            do q = 1, nq
+                do r = 1, NV
+                    sc = maxval(abs(ag_B(r,:,q)))
+                    if (sc == 0.0_dp) sc = 1.0_dp
+                    ag_A(r,:,q) = ag_A(r,:,q)/sc; ag_B(r,:,q) = ag_B(r,:,q)/sc; ag_D(r,:,q) = ag_D(r,:,q)/sc
+                    ag_rhs(r,q) = ag_rhs(r,q)/sc
+                    if (mod(q, nja) == 0 .and. r <= IP2) rsurf(r, q/nja) = 1.0_dp/sc
+                end do
+            end do
+            call band_factor(NV, nq, ag_A, ag_B, ag_D, fac)
+            if (fac%status /= BAND_OK) exit
+            call band_factor_solve(fac, ag_rhs, x0, st)
+            if (st /= BAND_OK) exit
+            do col = 1, 3
+                E = 0.0_dp
+                do l = 1, nl
+                    E(col, l*nja) = rsurf(col, l)
+                end do
+                call band_factor_solve(fac, E, Z(:,:,col), st)
+                if (st /= BAND_OK) exit
+            end do
+            if (st /= BAND_OK) exit
+            ! ---- electrode with the condensed agglomerate sources: R_e + w q ----
+            call lel_assemble(c, c_old, h, i_app)
+            do l = 1, nl
+                j = s + l
+                w = ag_s*dx(j)
+                call agg_surface(l, qv, Jq)
+                x0l(1:NV) = x0(:, l*nja - 1); x0l(NV+1:2*NV) = x0(:, l*nja)
+                do col = 1, 3
+                    Zl(1:NV, col) = Z(:, l*nja - 1, col); Zl(NV+1:2*NV, col) = Z(:, l*nja, col)
+                end do
+                G(1:3, j) = G(1:3, j) - w*qv - w*matmul(Jq, x0l)
+                B(1:3, 1:3, j) = B(1:3, 1:3, j) + w*matmul(Jq, Zl)
+            end do
+            call equilibrate()
+            call band_solve(NV, nj, A, B, Dm, G, dc, st)
+            if (st /= BAND_OK) exit
+            do l = 1, nl
+                j = s + l
+                do k = 1, nja
+                    q = (l - 1)*nja + k
+                    dca(:,k,l) = x0(:,q) + Z(:,q,1)*dc(IC,j) + Z(:,q,2)*dc(IP1,j) + Z(:,q,3)*dc(IP2,j)
+                end do
+            end do
+            lam = lbounded(dc)
+            do k = 1, NV
+                mx = maxval(abs(dca(k,:,:)))
+                if (mx > caps(k)) lam = min(lam, caps(k)/mx)
+            end do
+            ! divergence is judged on the damped electrode update: near theta = 0 or 1 a linearized log-odds
+            ! update of the agglomerates is legitimately huge, and through the condensation it also inflates
+            ! the undamped electrode update; the step limit scales both down
+            raw = lam*maxval(abs(dc))
+            c = c + lam*dc
+            cag = cag + lam*dca
+            upd = 0.0_dp
+            do j = 1, nj
+                upd = max(upd, exp(c(IC,j))*abs(dc(IC,j)), abs(dc(IP1,j)), abs(dc(IP2,j)))
+            end do
+            do l = 1, nl
+                do k = 1, nja
+                    th = sigm(cag(ICS,k,l))
+                    upd = max(upd, exp(cag(IC,k,l))*abs(dca(IC,k,l)), abs(dca(IP1,k,l)), abs(dca(IP2,k,l)), &
+                              th*sigm(-cag(ICS,k,l))*abs(dca(ICS,k,l)))
+                end do
+            end do
+            if (.not. ieee_is_finite(raw) .or. raw > 1.0e3_dp) exit
+            if (lam == 1.0_dp .and. converged(upd, prev)) then
+                xc = reshape(cag, [nxc, nl])
+                ok = .true.
+                return
+            end if
+            prev = upd
+        end do
+        c = c_old
+        cag = cag_old
+        xc = reshape(cag, [nxc, nl])
+    end subroutine agg_newton
 
     subroutine xtal_rows(l, dt, xcold, Rc, Bc, Dc_, Ac)
         !! Crystal l's rows without the reaction (diffusion_rows in Python): storage plus the net outward
@@ -1307,7 +1561,7 @@ contains
         real(dp), parameter :: min_dt = 1.0e-10_dp, event_dv = 1.0e-4_dp, event_min_dt = 1.0e-12_dp
         integer, parameter :: max_failures = 200
         real(dp) :: hh, vv, mg, c_save(NV,nj)
-        real(dp) :: xc_save(nj_crystal,nl)
+        real(dp) :: xc_save(nxc,nl)
         integer :: failures
         logical :: good
         t_done = 0.0_dp
@@ -1365,6 +1619,11 @@ contains
         if (crystal) then                        ! the crystal surfaces, where the reaction is
             thmin = sigm(minval(xc(nj_crystal,:)))
             thmax = sigm(maxval(xc(nj_crystal,:)))
+        else if (agglom) then                    ! the agglomerates' pores and crystals
+            cag = reshape(xc, [NV, nja, nl])
+            cmin = min(cmin, c_bulk*exp(minval(cag(IC,:,:))))
+            thmin = sigm(minval(cag(ICS,:,:)))
+            thmax = sigm(maxval(cag(ICS,:,:)))
         else
             thmin = sigm(minval(c(ICS,s:nj)))
             thmax = sigm(maxval(c(ICS,s:nj)))
@@ -1566,7 +1825,7 @@ contains
         integer, intent(in) :: step
         real(dp) :: i0_li, eta, th(4)
         character(len=1) :: st
-        if (header .and. crystal) then
+        if (header .and. (crystal .or. agglom)) then
             write(ounit,'(A5,1X,2(A12,1X),20(A15,1X))') 'State', 'Time', 'Voltage', 'Equivalence', 'Anode_Eta', &
                 'anode_exchange_c', 'Edge_c0', 'Current', 'Step', 'Li_Nernst', 'Th_surf_sep', 'Th_mean_sep', &
                 'Th_surf_col', 'Th_mean_col'
@@ -1583,7 +1842,7 @@ contains
         if (i_app < 0) st = 'C'
         i0_li = F*k_Li*(c_foil()**0.5_dp)*(c_Li_ref**0.5_dp)
         eta = li_eta()
-        if (crystal) then
+        if (crystal .or. agglom) then
             th = crystal_thetas()
             write(ounit,'(A5,1X,2(F12.5,1X),5(ES15.5,1X),I15,1X,5(ES15.5,1X))') st, time/3600.0_dp, cell_voltage(), &
                 mAhg*M*3.6_dp/F, eta*1.0e3_dp, i0_li*1.0e3_dp, c_foil(), i_app*1.0e3_dp, step, li_nernst()*1.0e3_dp, th
@@ -1594,10 +1853,21 @@ contains
     end subroutine write_row_c
 
     function crystal_thetas() result(th)
-        !! Surface and volume-mean theta of the first (separator side) and last (collector side) crystal.
+        !! Surface and volume-mean theta of the first (separator side) and last (collector side) crystal; in the
+        !! agglomerate model, of the first and last agglomerate (surface crystals, and the mean over its volume).
         real(dp) :: th(4), vtot, ms, mc
         integer :: j
         vtot = 0.0_dp; ms = 0.0_dp; mc = 0.0_dp
+        if (agglom) then
+            cag = reshape(xc, [NV, nja, nl])
+            do j = 1, nja
+                vtot = vtot + ag_dV(j)
+                ms = ms + ag_dV(j)*sigm(cag(ICS,j,1))
+                mc = mc + ag_dV(j)*sigm(cag(ICS,j,nl))
+            end do
+            th = [sigm(cag(ICS,nja,1)), ms/vtot, sigm(cag(ICS,nja,nl)), mc/vtot]
+            return
+        end if
         do j = 1, nj_crystal
             vtot = vtot + xtal_V(j)
             ms = ms + xtal_V(j)*sigm(xc(j,1))

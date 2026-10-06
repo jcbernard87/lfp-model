@@ -71,3 +71,9 @@ def test_crystal_example_is_the_default_crystal_model():
     p, _ = load(ROOT / "input" / "examples" / "crystal.nml")
     assert p == Params(mode="corrected", particle_model="crystal")
     assert (p.crystal_shape, p.D_c, p.nj_crystal) == ("sphere", 8.0e-14, 21)
+
+
+def test_agglomerate_example_is_the_default_agglomerate_model():
+    """input/examples/agglomerate.nml is the default parameters with particle_model = 'agglomerate'."""
+    p, _ = load(ROOT / "input" / "examples" / "agglomerate.nml")
+    assert p == Params(mode="corrected", particle_model="agglomerate")

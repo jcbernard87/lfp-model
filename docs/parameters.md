@@ -12,6 +12,10 @@ These are the default values in the original research code. The source line (`L�
 | `len_sep` | L_sep | 25 × 10⁻⁴ | cm | L109 | separator thickness, 25 µm (the source comment asks whether µm or cm) |
 | `NJ` | | 101 | | L35 | total nodes |
 | (new) `nj_crystal` | | 21 | | — | crystal model: nodes across a crystal, center and surface included (the original's `NJ_c` = 51 was never used). 21 nodes give the 2C capacity within 3 × 10⁻⁴ equivalents of 81 nodes (validation.md §6) |
+| (new) `nja` | | 21 | | — | agglomerate model (`&agglomerate`): nodes along an agglomerate radius, center and surface included (zero-volume) |
+| (new) `R_agg` | | 5 × 10⁻⁴ | cm | — | agglomerate model: agglomerate radius (5 µm, a typical spray-dried LiFePO₄ secondary particle); the crystals inside have radius `R_p` |
+| (new) `eps_agg` | | 0.2 | | — | agglomerate model: agglomerate porosity; ε + f_AM(1−ε)/(1−ε_agg) ≤ 1 |
+| (new) `tau_agg`, `sigma_agg` | | −1, −1 | , S/cm | — | agglomerate model: pore tortuosity and solid conductivity inside the agglomerates; ≤ 0 means ε_agg^−½ and `sigma` |
 | `SEP_NODE` | | 22 | | L108 | separator/cathode interface node |
 | `eps` | ε | 0.5 | | L126 | cathode porosity |
 | `volfrac_AM` | ε_AM (`eps_AM`) | 0.8 (stored 0.800000011920929) | | L125 | faithful mode: active-material volume fraction, as in the original (ε + ε_AM = 1.3 > 1, **[D-9]**) |

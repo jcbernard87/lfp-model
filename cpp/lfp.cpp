@@ -21,6 +21,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -208,6 +209,9 @@ struct Params {
     std::string particle_model = "uniform";  // corrected mode: 'uniform' particles or 'crystal' (solid diffusion)
     std::string crystal_shape = "sphere";    // crystal model: 'sphere', 'cylinder' or 'slab'
     double D_c = 8.0e-14;                  // crystal model: solid diffusivity [cm2/s]
+    int nja = 21;                          // agglomerate model: nodes along an agglomerate radius
+    double R_agg = 5.0e-4, eps_agg = 0.2;  // agglomerate model: radius [cm] and porosity
+    double tau_agg = -1.0, sigma_agg = -1.0;  // agglomerate pores' tortuosity, solid conductivity (<= 0: derived)
     double eps = 0.5, eps_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5;
     double f_AM = 0.8;  // corrected mode: active fraction of the solid phase (D-9)
     double D = 2.0e-6, t_plus = 0.25, c_bulk = 1.0e-3, z_plus = 1.0, z_minus = -1.0;
@@ -264,10 +268,11 @@ Params read_input(const std::string& path) {
         {"phi1_init", &p.phi1_init}, {"phi2_init", &p.phi2_init}, {"cs_init", &p.cs_init},
         {"t_max", &p.t_max}, {"fd_step", &p.fd_step}, {"v_min", &p.V_min}, {"v_max", &p.V_max},
         {"newton_tol", &p.newton_tol}, {"write_interval", &p.write_interval}, {"rtol", &p.rtol},
-        {"atol", &p.atol}, {"dt_min", &p.dt_min}, {"dt_max", &p.dt_max}};
+        {"atol", &p.atol}, {"dt_min", &p.dt_min}, {"dt_max", &p.dt_max}, {"r_agg", &p.R_agg}, {"eps_agg", &p.eps_agg},
+        {"tau_agg", &p.tau_agg}, {"sigma_agg", &p.sigma_agg}};
     std::map<std::string, int*> ints = {{"nj", &p.nj}, {"sep_node", &p.sep_node}, {"n_steps", &p.n_steps},
                                         {"newton_max_iter", &p.newton_max_iter}, {"cycles", &p.cycles},
-                                        {"nj_crystal", &p.nj_crystal}};
+                                        {"nj_crystal", &p.nj_crystal}, {"nja", &p.nja}};
     std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}, {"steps", &p.steps},
                                                 {"dt_mode", &p.dt_mode},
                                                 {"particle_model", &p.particle_model},
@@ -282,6 +287,7 @@ Params read_input(const std::string& path) {
         {"numerics", {"fd_step", "newton_tol", "newton_max_iter", "mode", "dt_mode", "rtol", "atol", "dt_min", "dt_max"}},
         {"protocol", {"steps", "cycles"}},
         {"output", {"file", "write_interval"}},
+        {"agglomerate", {"nja", "r_agg", "eps_agg", "tau_agg", "sigma_agg"}},
     };
     std::set<std::string> seen_groups;
     const std::regex group(R"(&(\w+)((?:'[^']*'|"[^"]*"|[^/'"])*)/)");   // a '/' inside quotes is text
@@ -398,6 +404,7 @@ struct Model {
     // crystal model (corrected mode; docs/model.md section 12): one crystal per cathode volume,
     // electrode nodes s+1 .. nj-2; vertex-centred mesh with node volumes xtal_V and face areas xtal_A
     bool crystal = false;
+    bool agglom = false;  // particle_model = 'agglomerate' (AggModel; docs/model.md section 13)
     int nl = 0;
     double xtal_h = 0.0, xtal_AR = 0.0, a_x = 0.0;
     std::vector<double> xtal_V, xtal_A;
@@ -458,15 +465,24 @@ struct Model {
 
     // validate the particle-model inputs and build the crystal mesh (see crystal.py in Python)
     void crystal_setup() {
-        if (p.particle_model != "uniform" && p.particle_model != "crystal")
-            throw std::runtime_error("particle_model must be one of ('uniform', 'crystal'), got '" + p.particle_model + "'");
+        if (p.particle_model != "uniform" && p.particle_model != "crystal" && p.particle_model != "agglomerate")
+            throw std::runtime_error("particle_model must be one of ('uniform', 'crystal', 'agglomerate'), got '" +
+                                     p.particle_model + "'");
         int k;
         if (p.crystal_shape == "slab") k = 0;
         else if (p.crystal_shape == "cylinder") k = 1;
         else if (p.crystal_shape == "sphere") k = 2;
         else throw std::runtime_error("crystal_shape must be one of ('slab', 'cylinder', 'sphere'), got '" + p.crystal_shape + "'");
         crystal = p.particle_model == "crystal";
+        agglom = p.particle_model == "agglomerate";
         nl = 0;
+        if (agglom) {  // one agglomerate per cathode volume, electrode nodes s+1 .. nj-2
+            if (faithful) throw std::runtime_error("particle_model='agglomerate' needs mode='corrected'");
+            if (p.nja < 4) throw std::runtime_error("nja must be at least 4, got " + std::to_string(p.nja));
+            if (p.eps + vf_AM / (1.0 - p.eps_agg) > 1.0 + 1.0e-12)
+                throw std::runtime_error("porosity + agglomerate volume fraction exceed 1");
+            nl = p.nj - 2 - s;
+        }
         if (!crystal) return;
         if (faithful) throw std::runtime_error("particle_model='crystal' needs mode='corrected'");
         if (p.nj_crystal < 4) throw std::runtime_error("nj_crystal must be at least 4, got " + std::to_string(p.nj_crystal));
@@ -736,7 +752,7 @@ struct Model {
             for (int v = 0; v < NV; ++v) blk(B, j, ICS, v) = 0.0;
             blk(B, j, ICS, ICS) = 1.0;
         }
-        if (crystal) {  // the S column stays fixed; xtal_newton adds the crystals' reaction
+        if (crystal || agglom) {  // the S column stays fixed; xtal_newton or AggModel adds the reaction
             for (std::size_t q = 0; q < G.size(); ++q) G[q] = -R[q];
             return;
         }
@@ -788,6 +804,226 @@ double phys_update(const std::vector<double>& x, const std::vector<double>& d) {
     return u;
 }
 
+// ============================== agglomerate model (corrected mode; docs/model.md section 13) ==============================
+// porous agglomerates (radius R_agg) of uniform crystals (radius R_p) at every cathode volume (see agglomerate.py in
+// Python); the state of agglomerate l, node k, unknown v is ca[(l*na + k)*NV + v]
+struct AggModel {
+    Model& m;
+    const Params& p;
+    int nj, s, na, nl;
+    double v_agg, s_agg, a_x, csm;
+    std::vector<double> xa, dxa, dV, a_area, a_g, a_gs;
+    std::vector<double> Aq, Bq, Dq, Gq;   // stacked agglomerate blocks
+
+    explicit AggModel(Model& mm) : m(mm), p(mm.p) {
+        nj = p.nj; s = m.s; na = p.nja; nl = m.nl;
+        v_agg = m.vf_AM / (1.0 - p.eps_agg);
+        s_agg = 3.0 * v_agg / p.R_agg;
+        a_x = 3.0 * (1.0 - p.eps_agg) / p.R_p;
+        csm = m.cs_max();
+        const double tau_a = p.tau_agg <= 0.0 ? std::pow(p.eps_agg, -0.5) : p.tau_agg;
+        const double sig_a = p.sigma_agg <= 0.0 ? p.sigma : p.sigma_agg;
+        // radial grid (zero-volume center and surface nodes)
+        xa.assign(na, 0.0); dxa.assign(na, 0.0); dV.assign(na, 0.0);
+        a_area.assign(na - 1, 0.0); a_g.assign(na - 1, 0.0); a_gs.assign(na - 1, 0.0);
+        const double hr = p.R_agg / static_cast<double>(na - 2), pi = std::acos(-1.0);
+        for (int j = 1; j < na - 1; ++j) { xa[j] = hr * static_cast<double>(j) - hr / 2.0; dxa[j] = hr; }
+        xa[na - 1] = p.R_agg;
+        for (int j = 0; j < na; ++j) {
+            double rW = xa[j] - dxa[j] / 2.0, rE = xa[j] + dxa[j] / 2.0;
+            if (j == 0) rW = rE = 0.0;
+            if (j == na - 1) rW = rE = p.R_agg;
+            dV[j] = 4.0 * pi / 3.0 * (rE * rE * rE - rW * rW * rW);
+        }
+        for (int j = 0; j < na - 1; ++j) {  // face j joins nodes j and j+1
+            const double rf = j == 0 ? 0.0 : xa[j] + dxa[j] / 2.0, h = (dxa[j] + dxa[j + 1]) / 2.0;
+            a_area[j] = 4.0 * pi * rf * rf;
+            a_g[j] = p.eps_agg / tau_a / h;
+            a_gs[j] = (1.0 - p.eps_agg) * sig_a / h;
+        }
+        const std::size_t nq = static_cast<std::size_t>(nl) * na;
+        Aq.assign(nq * NV * NV, 0.0); Bq.assign(Aq.size(), 0.0); Dq.assign(Aq.size(), 0.0); Gq.assign(nq * NV, 0.0);
+    }
+
+    std::vector<double> initial() const {
+        std::vector<double> ca(static_cast<std::size_t>(nl) * na * NV);
+        const double th0 = p.cs_init / csm;
+        for (std::size_t q = 0; q < ca.size() / NV; ++q) {
+            ca[q * NV + IC] = 0.0; ca[q * NV + IP1] = p.phi1_init; ca[q * NV + IP2] = p.phi2_init;
+            ca[q * NV + ICS] = std::log(th0 / (1.0 - th0));
+        }
+        return ca;
+    }
+
+    // stacked blocks and G = -R of every agglomerate; the surface takes the electrode's u, phi1, phi2
+    void assemble(const std::vector<double>& c, const std::vector<double>& ca, const std::vector<double>& ca_old, double h) {
+        const double F = p.F, ea = p.eps_agg;
+        std::vector<double> Fv(3 * static_cast<std::size_t>(na - 1)), dFa(3 * NV * static_cast<std::size_t>(na - 1)),
+            dFb(dFa.size());
+        for (int l = 0; l < nl; ++l) {
+            const double* xl = &ca[static_cast<std::size_t>(l) * na * NV];
+            for (int k = 0; k < na - 1; ++k)
+                m.sg_face(xl + k * NV, xl + (k + 1) * NV, a_g[k], a_gs[k], &Fv[3 * k], &dFa[3 * NV * k], &dFb[3 * NV * k]);
+            auto FA = [&](int k, int f, int v) { return dFa[3 * NV * k + f * NV + v]; };
+            auto FB = [&](int k, int f, int v) { return dFb[3 * NV * k + f * NV + v]; };
+            for (int j = 0; j < na; ++j) {
+                const std::size_t q = static_cast<std::size_t>(l) * na + j, o = q * NV * NV;
+                double Rr[NV] = {0, 0, 0, 0}, i, di[NV];
+                for (int z = 0; z < NV * NV; ++z) { Aq[o + z] = 0.0; Bq[o + z] = 0.0; Dq[o + z] = 0.0; }
+                auto At = [&](int r, int v) -> double& { return Aq[o + r * NV + v]; };
+                auto Bt = [&](int r, int v) -> double& { return Bq[o + r * NV + v]; };
+                auto Dt = [&](int r, int v) -> double& { return Dq[o + r * NV + v]; };
+                const double* x = xl + j * NV;
+                m.log_rate(x, i, di);
+                if (j == 0) {  // center: zero gradient
+                    for (int col = IC; col <= IP2; ++col) { Rr[col] = xl[NV + col] - x[col]; Bt(col, col) = -1.0; Dt(col, col) = 1.0; }
+                } else if (j == na - 1) {  // surface: the electrode's u, phi1, phi2
+                    for (int col = IC; col <= IP2; ++col) {
+                        Rr[col] = x[col] - c[static_cast<std::size_t>(s + 1 + l) * NV + col];
+                        Bt(col, col) = 1.0;
+                    }
+                } else {
+                    const double V = dV[j];
+                    for (int f = 0; f < 3; ++f) {
+                        Rr[f] = a_area[j] * Fv[3 * j + f] - a_area[j - 1] * Fv[3 * (j - 1) + f];
+                        for (int v = 0; v < NV; ++v) {
+                            Bt(f, v) = a_area[j] * FA(j, f, v) - a_area[j - 1] * FB(j - 1, f, v);
+                            Dt(f, v) = a_area[j] * FB(j, f, v);
+                            At(f, v) = -a_area[j - 1] * FA(j - 1, f, v);
+                        }
+                    }
+                    const double cj = p.c_bulk * std::exp(x[IC]), cjo = p.c_bulk * std::exp(ca_old[q * NV + IC]);
+                    Rr[IC] = Rr[IC] + ea * V * (cj - cjo) / h - a_x * i * V / F;
+                    Bt(IC, IC) = Bt(IC, IC) + ea * V * cj / h;
+                    for (int v = 0; v < NV; ++v) {
+                        Bt(IC, v) = Bt(IC, v) - a_x * di[v] * V / F;
+                        Bt(IP1, v) = Bt(IP1, v) + a_x * di[v] * V;
+                        Bt(IP2, v) = Bt(IP2, v) - a_x * di[v] * V;
+                    }
+                    Rr[IP1] = Rr[IP1] + a_x * i * V;
+                    Rr[IP2] = Rr[IP2] - a_x * i * V;
+                }
+                // crystals, every node: (1 - eps_agg) cs_max dtheta/dt = -a_x i/F
+                const double th = sigm(x[ICS]), tho = sigm(ca_old[q * NV + ICS]);
+                Rr[ICS] = (1.0 - ea) * csm * (th - tho) / h + a_x * i / F;
+                for (int v = 0; v < NV; ++v) Bt(ICS, v) = a_x * di[v] / F;
+                Bt(ICS, ICS) = Bt(ICS, ICS) + (1.0 - ea) * csm * th * sigm(-x[ICS]) / h;
+                for (int r = 0; r < NV; ++r) Gq[q * NV + r] = -Rr[r];
+            }
+        }
+    }
+
+    // flux into agglomerate l through r = R: q = (N+, i1, i2), and dq/dx at its last two nodes
+    void surface(int l, const std::vector<double>& ca, double qv[3], double Jq[3][2 * NV]) const {
+        const double* xin = &ca[(static_cast<std::size_t>(l) * na + na - 2) * NV];
+        double Fv[3], dFa[3][NV], dFb[3][NV];
+        m.sg_face(xin, xin + NV, a_g[na - 2], a_gs[na - 2], Fv, &dFa[0][0], &dFb[0][0]);
+        for (int r = 0; r < 3; ++r) {
+            qv[r] = -Fv[r];
+            for (int v = 0; v < NV; ++v) { Jq[r][v] = -dFa[r][v]; Jq[r][NV + v] = -dFb[r][v]; }
+        }
+    }
+
+    // one backward-Euler step of length h for both scales (condensed Newton); c, ca updated on success
+    bool newton(std::vector<double>& c, std::vector<double>& ca, double h, std::vector<double>& A, std::vector<double>& B,
+                std::vector<double>& Dm, std::vector<double>& G) {
+        const std::vector<double> c_old = c, ca_old = ca;
+        const std::size_t nq = static_cast<std::size_t>(nl) * na;
+        std::vector<double> x0, Zc[3], E(nq * NV), dce, dca(nq * NV), rsurf(3 * static_cast<std::size_t>(nl));
+        const double caps[NV] = {1.0, 0.1, 0.1, 2.0};
+        double prev = std::numeric_limits<double>::infinity();
+        for (int it = 0; it < p.newton_max_iter; ++it) {
+            // agglomerates: the update at fixed surface values and the three surface responses
+            assemble(c, ca, ca_old, h);
+            for (std::size_t q = 0; q < nq; ++q)
+                for (int r = 0; r < NV; ++r) {
+                    const std::size_t o = (q * NV + r) * NV;
+                    double sc = 0.0;
+                    for (int k = 0; k < NV; ++k) sc = std::max(sc, std::abs(Bq[o + k]));
+                    if (sc == 0.0) sc = 1.0;
+                    for (int k = 0; k < NV; ++k) { Aq[o + k] = Aq[o + k] / sc; Bq[o + k] = Bq[o + k] / sc; Dq[o + k] = Dq[o + k] / sc; }
+                    Gq[q * NV + r] = Gq[q * NV + r] / sc;
+                    if (static_cast<int>(q % na) == na - 1 && r <= IP2) rsurf[3 * (q / na) + r] = 1.0 / sc;
+                }
+            if (!band::solve(NV, static_cast<int>(nq), Aq, Bq, Dq, Gq, x0, band::Pivot::partial)) break;
+            bool good = true;
+            for (int col = 0; col < 3 && good; ++col) {
+                std::fill(E.begin(), E.end(), 0.0);
+                for (int l = 0; l < nl; ++l) E[(static_cast<std::size_t>(l) * na + na - 1) * NV + col] = rsurf[3 * l + col];
+                good = band::solve(NV, static_cast<int>(nq), Aq, Bq, Dq, E, Zc[col], band::Pivot::partial);
+            }
+            if (!good) break;
+            // electrode with the condensed agglomerate sources: R_e + w q
+            m.log_assemble(c, c_old, h, m.i_app, A, B, Dm, G);
+            for (int l = 0; l < nl; ++l) {
+                const int j = s + 1 + l;
+                const double w = s_agg * m.dx[j];
+                double qv[3], Jq[3][2 * NV];
+                surface(l, ca, qv, Jq);
+                const std::size_t b0 = (static_cast<std::size_t>(l) * na + na - 2) * NV;
+                double jx[3], jz[3][3];
+                for (int r = 0; r < 3; ++r) {
+                    jx[r] = 0.0;
+                    for (int k = 0; k < 2 * NV; ++k) jx[r] = jx[r] + Jq[r][k] * x0[b0 + k];
+                    for (int col = 0; col < 3; ++col) {
+                        jz[r][col] = 0.0;
+                        for (int k = 0; k < 2 * NV; ++k) jz[r][col] = jz[r][col] + Jq[r][k] * Zc[col][b0 + k];
+                    }
+                }
+                for (int r = 0; r < 3; ++r) {
+                    const std::size_t g = static_cast<std::size_t>(j) * NV + r;
+                    G[g] = G[g] - w * qv[r] - w * jx[r];
+                    for (int col = 0; col < 3; ++col) B[g * NV + col] = B[g * NV + col] + w * jz[r][col];
+                }
+            }
+            for (int jj = 0; jj < nj; ++jj)  // scale every equation by the largest entry of its row in B
+                for (int r = 0; r < NV; ++r) {
+                    const std::size_t o = (static_cast<std::size_t>(jj) * NV + r) * NV;
+                    double sc = 0.0;
+                    for (int k = 0; k < NV; ++k) sc = std::max(sc, std::abs(B[o + k]));
+                    if (sc == 0.0) sc = 1.0;
+                    for (int k = 0; k < NV; ++k) { A[o + k] = A[o + k] / sc; B[o + k] = B[o + k] / sc; Dm[o + k] = Dm[o + k] / sc; }
+                    G[static_cast<std::size_t>(jj) * NV + r] = G[static_cast<std::size_t>(jj) * NV + r] / sc;
+                }
+            if (!band::solve(NV, nj, A, B, Dm, G, dce, band::Pivot::partial)) break;
+            for (int l = 0; l < nl; ++l) {
+                const std::size_t je = static_cast<std::size_t>(s + 1 + l) * NV;
+                for (int k = 0; k < na; ++k) {
+                    const std::size_t q = (static_cast<std::size_t>(l) * na + k) * NV;
+                    for (int v = 0; v < NV; ++v)
+                        dca[q + v] = x0[q + v] + Zc[0][q + v] * dce[je + IC] + Zc[1][q + v] * dce[je + IP1] + Zc[2][q + v] * dce[je + IP2];
+                }
+            }
+            double lam = lbounded(dce);
+            for (int k = 0; k < NV; ++k) {
+                double mx = 0.0;
+                for (std::size_t q = k; q < dca.size(); q += NV) mx = std::max(mx, std::abs(dca[q]));
+                if (mx > caps[k]) lam = std::min(lam, caps[k] / mx);
+            }
+            // divergence is judged on the damped electrode update: near theta = 0 or 1 a linearized log-odds
+            // update of the agglomerates is legitimately huge, and through the condensation it also inflates
+            // the undamped electrode update; the step limit scales both down
+            double raw = 0.0;
+            for (double v : dce) raw = std::max(raw, std::abs(v));
+            raw = lam * raw;
+            for (std::size_t q = 0; q < c.size(); ++q) c[q] = c[q] + lam * dce[q];
+            for (std::size_t q = 0; q < ca.size(); ++q) ca[q] = ca[q] + lam * dca[q];
+            double upd = 0.0;
+            for (std::size_t q = 0; q < c.size(); q += NV)
+                upd = std::max({upd, std::exp(c[q + IC]) * std::abs(dce[q + IC]), std::abs(dce[q + IP1]), std::abs(dce[q + IP2])});
+            for (std::size_t q = 0; q < ca.size(); q += NV)
+                upd = std::max({upd, std::exp(ca[q + IC]) * std::abs(dca[q + IC]), std::abs(dca[q + IP1]), std::abs(dca[q + IP2]),
+                                sigm(ca[q + ICS]) * sigm(-ca[q + ICS]) * std::abs(dca[q + ICS])});
+            if (!std::isfinite(raw) || raw > 1.0e3) break;
+            if (lam == 1.0 && converged(upd, prev, p.newton_tol)) return true;
+            prev = upd;
+        }
+        c = c_old;
+        ca = ca_old;
+        return false;
+    }
+};
+
 // ============================== output ==============================
 std::string fixed12(double v) {
     char b[64];
@@ -829,6 +1065,12 @@ int main(int argc, char** argv) {
         }
         const int nc = p.nj_crystal;
         std::vector<double> xc(static_cast<std::size_t>(nc) * m.nl, std::log((p.cs_init / m.cs_max()) / (1.0 - p.cs_init / m.cs_max())));
+        // the agglomerate model keeps its unknowns in xc too, (l*nja + k)*NV + v, so the driver handles both alike
+        std::unique_ptr<AggModel> agg;
+        if (m.agglom) {
+            agg = std::make_unique<AggModel>(m);
+            xc = agg->initial();
+        }
         double t = 0.0, mAhg = 0.0, dt = p.t_max / static_cast<double>(p.n_steps);
         std::string exit_reason = "max_steps";
         int nsolve = 0;
@@ -838,7 +1080,7 @@ int main(int argc, char** argv) {
             std::vector<std::string> h2 = {"CDR", "hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3"};
             if (extended) { h1.push_back("Current"); h1.push_back("Step"); h1.push_back("Li_Nernst");
                           h2.push_back("mA/cm2"); h2.push_back("#"); h2.push_back("mV"); }
-            if (extended && m.crystal)
+            if (extended && (m.crystal || m.agglom))
                 for (const char* name : {"Th_surf_sep", "Th_mean_sep", "Th_surf_col", "Th_mean_col"}) {
                     h1.push_back(name);
                     h2.push_back("-");
@@ -927,6 +1169,19 @@ int main(int argc, char** argv) {
                     }
                     std::fprintf(out, " %s %s %s %s", sci15(sigm(xc[nc - 1])).c_str(), sci15(ms / vtot).c_str(),
                                  sci15(sigm(xc[last + nc - 1])).c_str(), sci15(mc / vtot).c_str());
+                } else if (m.agglom) {
+                    // surface-crystal and volume-mean theta of the first and last agglomerate
+                    const int na = p.nja;
+                    const std::size_t last = static_cast<std::size_t>(m.nl - 1) * na * NV;
+                    double vtot = 0.0, ms = 0.0, mc = 0.0;
+                    for (int j = 0; j < na; ++j) {
+                        vtot = vtot + agg->dV[j];
+                        ms = ms + agg->dV[j] * sigm(xc[static_cast<std::size_t>(j) * NV + ICS]);
+                        mc = mc + agg->dV[j] * sigm(xc[last + static_cast<std::size_t>(j) * NV + ICS]);
+                    }
+                    std::fprintf(out, " %s %s %s %s", sci15(sigm(xc[static_cast<std::size_t>(na - 1) * NV + ICS])).c_str(),
+                                 sci15(ms / vtot).c_str(), sci15(sigm(xc[last + static_cast<std::size_t>(na - 1) * NV + ICS])).c_str(),
+                                 sci15(mc / vtot).c_str());
                 }
                 std::fprintf(out, "\n");
             };
@@ -1071,6 +1326,7 @@ int main(int argc, char** argv) {
             // one backward-Euler step of length h at the current m.i_app, solved with Newton (log variables)
             auto newton_step = [&](double h) {
                 if (m.crystal) return xtal_newton(h);
+                if (m.agglom) return agg->newton(c, xc, h, A, B, Dm, G);
                 const std::vector<double> c_old = c;
                 double prev = std::numeric_limits<double>::infinity();
                 for (int k = 0; k < p.newton_max_iter; ++k) {
@@ -1134,6 +1390,12 @@ int main(int argc, char** argv) {
                     for (int l = 0; l < m.nl; ++l) {
                         thmin = std::min(thmin, sigm(xc[static_cast<std::size_t>(l) * nc + nc - 1]));
                         thmax = std::max(thmax, sigm(xc[static_cast<std::size_t>(l) * nc + nc - 1]));
+                    }
+                } else if (m.agglom) {  // the agglomerates' pores and crystals
+                    for (std::size_t q = 0; q < xc.size(); q += NV) {
+                        cmin = std::min(cmin, p.c_bulk * std::exp(xc[q + IC]));
+                        thmin = std::min(thmin, sigm(xc[q + ICS]));
+                        thmax = std::max(thmax, sigm(xc[q + ICS]));
                     }
                 } else {
                     for (int j = m.s; j < nj; ++j) {

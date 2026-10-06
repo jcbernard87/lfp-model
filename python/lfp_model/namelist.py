@@ -28,6 +28,7 @@ GROUPS = {
     "constants": ["R", "T", "F"],
     "operation": ["C_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps", "V_min", "V_max"],
     "numerics": ["fd_step", "newton_tol", "newton_max_iter", "mode", "dt_mode", "rtol", "atol", "dt_min", "dt_max"],
+    "agglomerate": ["nja", "R_agg", "eps_agg", "tau_agg", "sigma_agg"],
     "protocol": ["steps", "cycles"],
     "output": ["file", "write_interval"],
 }

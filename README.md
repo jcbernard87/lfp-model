@@ -68,10 +68,10 @@ A cycling protocol goes in a `&protocol` group ([docs/protocol.md](docs/protocol
 
 The model is a port of the author's PhD research code. The port was checked for errors while it was being made:
 
-- **`mode = 'corrected'`** (recommended) fixes every defect found. The fixes are listed with evidence and their measured effect in [docs/deviations.md](docs/deviations.md). The electrolyte can run out and particles can fill or empty smoothly, without clipping: the unknowns are the logarithm of the concentration and the log-odds of the lithiation, with exponential-fitting (Scharfetter–Gummel) fluxes and thermodynamic tails on the open-circuit potential ([docs/model.md](docs/model.md) section 10). With `particle_model = 'crystal'` each cathode volume holds a crystal (sphere, cylinder or slab) with solid-state diffusion, coupled to the electrode in one Newton iteration (section 12); the default, `'uniform'`, keeps uniform-concentration particles.
+- **`mode = 'corrected'`** (recommended) fixes every defect found. The fixes are listed with evidence and their measured effect in [docs/deviations.md](docs/deviations.md). The electrolyte can run out and particles can fill or empty smoothly, without clipping: the unknowns are the logarithm of the concentration and the log-odds of the lithiation, with exponential-fitting (Scharfetter–Gummel) fluxes and thermodynamic tails on the open-circuit potential ([docs/model.md](docs/model.md) section 10). With `particle_model = 'crystal'` each cathode volume holds a crystal (sphere, cylinder or slab) with solid-state diffusion, coupled to the electrode in one Newton iteration (section 12); with `particle_model = 'agglomerate'` it holds porous agglomerates of crystals, with their own pore electrolyte and solid conduction (section 13); the default, `'uniform'`, keeps uniform-concentration particles.
 - **`mode = 'faithful'`** reproduces the original program exactly, defects included. It is kept for comparison with earlier work. In faithful mode all three implementations reproduce the original program's output files byte for byte ([docs/validation.md](docs/validation.md)). Faithful mode runs only the original constant-current discharge.
 
-`input/default.nml` uses corrected mode with uniform particles; [`input/examples/crystal.nml`](input/examples/crystal.nml) is the same with the crystal model (`particle_model = 'crystal'`). [`input/examples/faithful.nml`](input/examples/faithful.nml) reproduces the original.
+`input/default.nml` uses corrected mode with uniform particles; [`input/examples/crystal.nml`](input/examples/crystal.nml) and [`input/examples/agglomerate.nml`](input/examples/agglomerate.nml) are the same with the crystal and the agglomerate model. [`input/examples/faithful.nml`](input/examples/faithful.nml) reproduces the original.
 
 ## Documentation
 
@@ -92,7 +92,7 @@ The public tests compute everything they need. They cover cross-language agreeme
 
 ## Status
 
-Versions and changes: [CHANGELOG.md](CHANGELOG.md). Corrected mode has two particle models: uniform particles (the default) and `particle_model = 'crystal'`, with solid diffusion inside the crystals, written fresh. The original code's inactive crystal-scale submodel is not ported (deviation D-8).
+Versions and changes: [CHANGELOG.md](CHANGELOG.md). Corrected mode has three particle models: uniform particles (the default), `particle_model = 'crystal'`, with solid diffusion inside the crystals, written fresh, and `particle_model = 'agglomerate'`, ported from nmc111-model. The original code's inactive crystal-scale submodel is not ported (deviation D-8).
 
 ## License and citation
 

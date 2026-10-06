@@ -13,7 +13,7 @@ import numpy as np
 
 DT_MODES = ("fixed", "adaptive")
 MODES = ("faithful", "corrected")
-PARTICLE_MODELS = ("uniform", "crystal")
+PARTICLE_MODELS = ("uniform", "crystal", "agglomerate")
 CRYSTAL_SHAPES = {"slab": 0, "cylinder": 1, "sphere": 2}   # k: face area ~ r**k
 
 
@@ -54,6 +54,12 @@ class Params:
     particle_model: str = "uniform"  # corrected mode: 'uniform' particles or 'crystal' (solid diffusion)
     crystal_shape: str = "sphere"    # crystal model: 'sphere', 'cylinder' or 'slab'
     D_c: float = 8.0e-14             # crystal model: solid diffusivity [cm2/s]
+    # --- agglomerate model (particle_model = 'agglomerate'; crystals of radius R_p inside) ---
+    nja: int = 21                  # nodes along an agglomerate radius (center and surface included)
+    R_agg: float = 5.0e-4          # agglomerate radius [cm]
+    eps_agg: float = 0.2           # agglomerate porosity
+    tau_agg: float = -1.0          # agglomerate-pore tortuosity; <= 0: eps_agg**-0.5 (Bruggeman)
+    sigma_agg: float = -1.0        # agglomerate solid conductivity [S/cm]; <= 0: sigma
     # --- lithium counter electrode (output only) ---
     k_Li: float = 1.0e-6
     c_Li_ref: float = 1.0e-3
@@ -97,6 +103,13 @@ class Params:
             raise ValueError(f"particle_model must be one of {PARTICLE_MODELS}, got {self.particle_model!r}")
         if self.crystal_shape not in CRYSTAL_SHAPES:
             raise ValueError(f"crystal_shape must be one of {tuple(CRYSTAL_SHAPES)}, got {self.crystal_shape!r}")
+        if self.particle_model == "agglomerate":
+            if self.mode != "corrected":
+                raise ValueError("particle_model='agglomerate' needs mode='corrected'")
+            if self.nja < 4:
+                raise ValueError(f"nja must be at least 4, got {self.nja}")
+            if self.eps + self.vf_AM / (1.0 - self.eps_agg) > 1.0 + 1e-12:
+                raise ValueError("porosity + agglomerate volume fraction exceed 1")
         if self.particle_model == "crystal":
             if self.mode != "corrected":
                 raise ValueError("particle_model='crystal' needs mode='corrected'")

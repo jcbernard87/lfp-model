@@ -1,0 +1,45 @@
+! LFP half cell with the agglomerate model: each cathode volume holds porous agglomerates of crystals
+! (docs/model.md section 13). Units: cm, s, mol, A, V. See docs/parameters.md for every parameter.
+! Everything else is as in input/default.nml (corrected mode, the default parameters).
+
+&cell
+  L_cath_um = 24, L_sep = 25.0d-4, nj = 101, sep_node = 22
+  eps = 0.5, f_AM = 0.8, eps_sep = 0.39, tau_sep = 4.0, bruggeman = -0.5
+  ! f_AM: active-material fraction of the solid phase (active volume fraction = f_AM*(1-eps))
+  nj_crystal = 21          ! crystal model: nodes across a crystal
+/
+&electrolyte
+  D = 2.0d-6, t_plus = 0.25, c_bulk = 1.0d-3
+  kappa_bg = 1.0d-8        ! background (solvent) conductivity [S/cm], corrected mode
+/
+&active
+  sigma = 3.0d-3, M = 125.759, rho = 3.6, Q_th = 0.170, R_p = 200.0d-7
+  alpha_a = 0.5, alpha_c = 0.5
+  particle_model = 'agglomerate'   ! 'uniform', 'crystal' or 'agglomerate' (corrected mode)
+  crystal_shape = 'sphere'     ! crystal model: 'sphere', 'cylinder' or 'slab'
+  D_c = 8.0d-14                ! crystal model: solid diffusivity [cm2/s]
+/
+&operation
+  C_rate = 1.0            ! 1/h, positive = discharge
+  phi1_init = 3.6, phi2_init = 0.0, cs_init = 1.0d-5
+  t_max = 36000.0, n_steps = 36000   ! time step = t_max/n_steps
+  V_min = 2.5, V_max = 4.2           ! voltage cutoffs
+/
+&numerics
+  fd_step = 1.0d-6
+  mode = 'corrected'
+  dt_mode = 'fixed'        ! 'fixed' (t_max/n_steps) or 'adaptive' (local error control, docs/protocol.md)
+  rtol = 1.0d-4, atol = 1.0d-4, dt_min = 1.0d-6, dt_max = 0.0   ! adaptive only; dt_max = 0: write_interval
+/
+&protocol
+  steps = ''               ! empty: one constant-current step at C_rate down to V_min (docs/protocol.md)
+  cycles = 1
+/
+&output
+  file = 'Time_Voltage.txt', write_interval = 18.0
+/
+&agglomerate
+  nja = 21                 ! nodes along an agglomerate radius
+  R_agg = 5.0d-4, eps_agg = 0.2      ! agglomerate radius [cm] and porosity; crystals of radius R_p inside
+  tau_agg = -1.0, sigma_agg = -1.0   ! <= 0: eps_agg**-0.5 and sigma
+/
