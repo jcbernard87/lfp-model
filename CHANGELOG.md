@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-10-14)
 
 - **Agglomerate model** (`particle_model = 'agglomerate'`, corrected mode, all three languages): porous agglomerates of uniform crystals at every cathode volume, with their own pore electrolyte and solid conduction, condensed into the electrode's Newton step. Ported from nmc111-model with LiFePO₄'s kinetics; inputs in a new `&agglomerate` group (`nja`, `R_agg`, `eps_agg`, `tau_agg`, `sigma_agg`), crystals of radius `R_p`. Output columns as for the crystal model; `input/examples/agglomerate.nml`; docs/model.md §13. Fortran and C++ identical, Python to the printed precision; tested for conservation of lithium and salt, the full residuals after a condensed step, quadratic Newton convergence, the uniform limit, first order in time and second order in both meshes.
 - **Tests:** the `run_native` fixture now sets a value that shares a line with other names in `default.nml` (e.g. `n_steps`); before, the default on that line overrode it, so a native CV sub-step test ran with 1 s steps instead of 10 s (it passes with 10 s).
