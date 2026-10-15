@@ -92,11 +92,20 @@ class Params:
     write_interval: float = 18.0   # [s]
     restart_read: str = ""         # corrected mode: start from this restart file (#23); '' = the initial state
     restart_write: str = ""        # corrected mode: write the final state to this restart file; '' = none
+    columns: str = ""              # corrected mode: time-series columns to write (names, comma-separated); '' = all
+    profile_file: str = ""         # corrected mode: write profiles against x to this file (#22); '' = none
+    profile_vars: str = ""         # profile variables (comma-separated; '' = all of the model's)
+    profile_every: int = 0         # a profile with every N-th output row (0: only at profile_times and the end)
+    profile_times: str = ""        # [s] a profile at the first output row at or after each of these times
     mode: str = "faithful"
 
     def __post_init__(self):
         if (self.restart_read or self.restart_write) and self.mode != "corrected":
             raise ValueError("restart files need mode='corrected'")
+        if (self.columns or self.profile_file) and self.mode != "corrected":
+            raise ValueError("columns and profiles need mode='corrected'")
+        if self.profile_every < 0:
+            raise ValueError(f"profile_every must be at least 0, got {self.profile_every}")
         if self.dt_mode not in DT_MODES:
             raise ValueError(f"dt_mode must be one of {DT_MODES}, got {self.dt_mode!r}")
         if self.dt_mode == "adaptive" and self.mode != "corrected":

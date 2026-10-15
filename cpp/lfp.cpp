@@ -235,6 +235,8 @@ struct Params {
     double kappa_bg = 1.0e-8;              // corrected: background (solvent) ionic conductivity [S/cm]
     std::string file = "Time_Voltage.txt";
     std::string restart_read, restart_write;  // corrected mode: restart files (#23)
+    std::string columns, profile_file, profile_vars, profile_times;  // corrected mode: configurable output (#22)
+    int profile_every = 0;                 // a profile with every N-th output row (0: none)
 };
 
 std::string lower(std::string s) {
@@ -273,9 +275,12 @@ Params read_input(const std::string& path) {
         {"tau_agg", &p.tau_agg}, {"sigma_agg", &p.sigma_agg}};
     std::map<std::string, int*> ints = {{"nj", &p.nj}, {"sep_node", &p.sep_node}, {"n_steps", &p.n_steps},
                                         {"newton_max_iter", &p.newton_max_iter}, {"cycles", &p.cycles},
-                                        {"nj_crystal", &p.nj_crystal}, {"nja", &p.nja}};
+                                        {"nj_crystal", &p.nj_crystal}, {"nja", &p.nja},
+                                        {"profile_every", &p.profile_every}};
     std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}, {"steps", &p.steps},
                                                 {"restart_read", &p.restart_read}, {"restart_write", &p.restart_write},
+                                                {"columns", &p.columns}, {"profile_file", &p.profile_file},
+                                                {"profile_vars", &p.profile_vars}, {"profile_times", &p.profile_times},
                                                 {"dt_mode", &p.dt_mode},
                                                 {"particle_model", &p.particle_model},
                                                 {"crystal_shape", &p.crystal_shape}};
@@ -288,7 +293,8 @@ Params read_input(const std::string& path) {
         {"operation", {"c_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps", "v_min", "v_max"}},
         {"numerics", {"fd_step", "newton_tol", "newton_max_iter", "mode", "dt_mode", "rtol", "atol", "dt_min", "dt_max"}},
         {"protocol", {"steps", "cycles"}},
-        {"output", {"file", "write_interval", "restart_read", "restart_write"}},
+        {"output", {"file", "write_interval", "restart_read", "restart_write", "columns", "profile_file", "profile_vars",
+                    "profile_every", "profile_times"}},
         {"agglomerate", {"nja", "r_agg", "eps_agg", "tau_agg", "sigma_agg"}},
     };
     std::set<std::string> seen_groups;
@@ -421,6 +427,10 @@ struct Model {
         if (p.dt_mode == "adaptive" && faithful) throw std::runtime_error("dt_mode='adaptive' needs mode='corrected'");
         if (faithful && (!p.restart_read.empty() || !p.restart_write.empty()))
             throw std::runtime_error("restart files need mode='corrected'");
+        if (faithful && (!p.columns.empty() || !p.profile_file.empty()))
+            throw std::runtime_error("columns and profiles need mode='corrected'");
+        if (p.profile_every < 0)
+            throw std::runtime_error("profile_every must be at least 0, got " + std::to_string(p.profile_every));
         if (faithful) {  // single-precision literals of the original (D-4)
             p.R = r32(p.R); p.c_bulk = r32(p.c_bulk); p.Q_th = r32(p.Q_th); p.M = r32(p.M); p.rho = r32(p.rho);
             p.phi1_init = r32(p.phi1_init); p.eps_sep = r32(p.eps_sep); p.eps_AM = r32(p.eps_AM);
@@ -1096,6 +1106,24 @@ std::string sci15(double v) {
     else std::snprintf(b, sizeof b, "%15.5E", v);
     return b;
 }
+std::string sci15p7(double v) {  // Fortran ES15.7
+    char b[64];
+    if (std::isnan(v)) std::snprintf(b, sizeof b, "%15s", "NaN");
+    else std::snprintf(b, sizeof b, "%15.7E", v);
+    return b;
+}
+// the comma- or blank-separated words of a list, and a lower-case copy
+std::vector<std::string> words_of(std::string text) {
+    for (char& ch : text) if (ch == ',') ch = ' ';
+    std::istringstream in(text);
+    std::vector<std::string> out;
+    for (std::string w; in >> w;) out.push_back(w);
+    return out;
+}
+std::string lowered(std::string s) {
+    for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
 std::string fit(const std::string& s, int w) {  // Fortran A<w>: right-justify, keep leftmost w characters
     const std::string t = s.substr(0, w);
     return std::string(w - t.size(), ' ') + t;
@@ -1208,7 +1236,7 @@ int main(int argc, char** argv) {
             }
         } else {
             // ---------------- corrected mode: protocol of cc / cv / rest steps ----------------
-            auto write_row = [&](bool header, int step) {
+            auto write_row_default = [&](bool header, int step) {
                 if (header) header_lines(true);
                 const char st = m.i_app > 0 ? 'D' : (m.i_app < 0 ? 'C' : 'R');
                 const double eta = li_eta(st);
@@ -1243,6 +1271,153 @@ int main(int argc, char** argv) {
                                  sci15(mc / vtot).c_str());
                 }
                 std::fprintf(out, "\n");
+            };
+            // ---- configurable output (#22; see output.py in Python) ----
+            const char* COL_NAMES[13] = {"Time", "Voltage", "Equivalence", "Anode_Eta", "anode_exchange_c", "Edge_c0",
+                                         "Current", "Step", "Li_Nernst", "Th_surf_sep", "Th_mean_sep", "Th_surf_col",
+                                         "Th_mean_col"};
+            const char* COL_UNITS[13] = {"hours", "Volts", "electron_equivs", "mV", "mA/cm2", "mol/cm3", "mA/cm2", "#",
+                                         "mV", "-", "-", "-", "-"};
+            const char* PV_NAMES[5] = {"c", "phi1", "phi2", "theta", "theta_surf"};
+            const char* PV_UNITS[5] = {"mol/cm3", "V", "V", "-", "-"};
+            const bool use_columns = !p.columns.empty();
+            bool col_keep[13] = {true};                 // the time always (the state too)
+            const int ncol_avail = (m.crystal || m.agglom) ? 13 : 9;
+            for (const auto& w : words_of(p.columns)) {
+                bool found = false;
+                for (int k = 0; k < ncol_avail; ++k)
+                    if (lowered(w) == lowered(COL_NAMES[k])) { col_keep[k] = true; found = true; }
+                if (!found) throw std::runtime_error("unknown output column '" + w + "'");
+            }
+            bool pv_on[5] = {false, false, false, false, false};
+            const int npv_avail = (m.crystal || m.agglom) ? 5 : 4;
+            std::vector<double> ptimes, xpos(nj, 0.0);
+            std::FILE* pf = nullptr;
+            int n_rows = 0, last_prof = -1;
+            std::size_t ipt = 0;
+            if (!p.profile_file.empty()) {
+                if (p.profile_vars.empty()) for (int k = 0; k < npv_avail; ++k) pv_on[k] = true;
+                for (const auto& w : words_of(p.profile_vars)) {
+                    bool found = false;
+                    for (int k = 0; k < npv_avail; ++k)
+                        if (lowered(w) == PV_NAMES[k]) { pv_on[k] = true; found = true; }
+                    if (!found) throw std::runtime_error("unknown profile variable '" + w + "'");
+                }
+                for (const auto& w : words_of(p.profile_times)) ptimes.push_back(std::strtod(w.c_str(), nullptr));
+                std::sort(ptimes.begin(), ptimes.end());
+                // node positions [cm] (make_mesh in Python)
+                const double h_sep = p.L_sep / static_cast<double>(p.sep_node - 2);
+                const double h_cat = m.L_cath / static_cast<double>(nj - p.sep_node - 1);
+                for (int j = 1; j < m.s; ++j) xpos[j] = h_sep * static_cast<double>(j) - h_sep / 2.0;
+                xpos[m.s] = p.L_sep;
+                for (int j = m.s + 1; j < nj - 1; ++j) xpos[j] = p.L_sep + h_cat * static_cast<double>(j - m.s) - h_cat / 2.0;
+                xpos[nj - 1] = m.L_cath + p.L_sep;
+                pf = std::fopen(p.profile_file.c_str(), "w");
+                if (!pf) throw std::runtime_error("cannot write " + p.profile_file);
+                std::string h1 = fit("Time", 15) + " " + fit("x", 15), h2 = fit("hours", 15) + " " + fit("um", 15);
+                for (int k = 0; k < 5; ++k)
+                    if (pv_on[k]) { h1 += " " + fit(PV_NAMES[k], 15); h2 += " " + fit(PV_UNITS[k], 15); }
+                std::fprintf(pf, "%s\n%s\n", h1.c_str(), h2.c_str());
+            }
+            // one profile: a row per node with the time [h], x [um] and the chosen variables (NaN where absent)
+            auto write_profile = [&]() {
+                const double nan = std::numeric_limits<double>::quiet_NaN();
+                const double shift = c[static_cast<std::size_t>(nj - 1) * NV + IP1] - cell_voltage();  // the foil reference
+                for (int j = 0; j < nj; ++j) {
+                    double v[5] = {nan, nan, nan, nan, nan};
+                    const std::size_t o = static_cast<std::size_t>(j) * NV;
+                    v[0] = p.c_bulk * std::exp(c[o + IC]);
+                    if (j >= m.s) v[1] = c[o + IP1] - shift;
+                    v[2] = c[o + IP2] - shift;
+                    if (m.crystal || m.agglom) {
+                        const int l = j - m.s;
+                        if (l >= 1 && l <= m.nl) {
+                            double vtot = 0.0, ms = 0.0;
+                            if (m.crystal) {
+                                const int nc = p.nj_crystal;
+                                const std::size_t b = static_cast<std::size_t>(l - 1) * nc;
+                                for (int q = 0; q < nc; ++q) {
+                                    vtot = vtot + m.xtal_V[q];
+                                    ms = ms + m.xtal_V[q] * sigm(xc[b + q]);
+                                }
+                                v[4] = sigm(xc[b + nc - 1]);
+                            } else {
+                                const int na = p.nja;
+                                const std::size_t b = static_cast<std::size_t>(l - 1) * na * NV;
+                                for (int q = 0; q < na; ++q) {
+                                    vtot = vtot + agg->dV[q];
+                                    ms = ms + agg->dV[q] * sigm(xc[b + static_cast<std::size_t>(q) * NV + ICS]);
+                                }
+                                v[4] = sigm(xc[b + static_cast<std::size_t>(na - 1) * NV + ICS]);
+                            }
+                            v[3] = ms / vtot;
+                        }
+                    } else if (j >= m.s) {
+                        v[3] = sigm(c[o + ICS]);
+                    }
+                    std::string row = sci15p7(t / 3600.0) + " " + sci15p7(xpos[j] * 1.0e4);
+                    for (int k = 0; k < 5; ++k) if (pv_on[k]) row += " " + sci15p7(v[k]);
+                    std::fprintf(pf, "%s\n", row.c_str());
+                }
+            };
+            // after an output row: a profile with every profile_every-th row and at the first row at or after each of
+            // profile_times (the last row's is written after the run, if not already)
+            auto profile_hook = [&]() {
+                if (!pf) return;
+                const int i = n_rows++;
+                bool due = p.profile_every > 0 && i % p.profile_every == 0;
+                while (ipt < ptimes.size() && t >= ptimes[ipt] * (1.0 - 1.0e-12)) { ++ipt; due = true; }
+                if (due) { write_profile(); last_prof = i; }
+            };
+            // the time series with the chosen columns: the state A5, Time and Voltage F12.5, Step I15, others ES15.5
+            auto write_row = [&](bool header, int step) {
+                if (!use_columns) {
+                    write_row_default(header, step);
+                    profile_hook();
+                    return;
+                }
+                const char st = m.i_app > 0 ? 'D' : (m.i_app < 0 ? 'C' : 'R');
+                const double eta = li_eta(st);
+                double th[4] = {0.0, 0.0, 0.0, 0.0};
+                if (m.crystal || m.agglom) {
+                    // as write_row_default: surface and mean theta of the first and last crystal or agglomerate
+                    const bool cr = m.crystal;
+                    const int n = cr ? p.nj_crystal : p.nja;
+                    const std::size_t stride = cr ? 1 : NV, off = cr ? 0 : ICS;
+                    const std::size_t last = static_cast<std::size_t>(m.nl - 1) * n * stride;
+                    double vtot = 0.0, ms = 0.0, mc = 0.0;
+                    for (int j = 0; j < n; ++j) {
+                        const double w = cr ? m.xtal_V[j] : agg->dV[j];
+                        vtot = vtot + w;
+                        ms = ms + w * sigm(xc[static_cast<std::size_t>(j) * stride + off]);
+                        mc = mc + w * sigm(xc[last + static_cast<std::size_t>(j) * stride + off]);
+                    }
+                    th[0] = sigm(xc[static_cast<std::size_t>(n - 1) * stride + off]); th[1] = ms / vtot;
+                    th[2] = sigm(xc[last + static_cast<std::size_t>(n - 1) * stride + off]); th[3] = mc / vtot;
+                }
+                const double vals[13] = {t / 3600.0, cell_voltage(), mAhg * p.M * 3.6 / p.F, eta * 1.0e3, i0_li() * 1.0e3,
+                                         c_foil(), m.i_app * 1.0e3, static_cast<double>(step), li_nernst() * 1.0e3,
+                                         th[0], th[1], th[2], th[3]};
+                if (header) {
+                    std::string h1 = fit("State", 5), h2 = fit("CDR", 5);
+                    for (int k = 0; k < 13; ++k) {
+                        if (!col_keep[k]) continue;
+                        const int w = k <= 1 ? 12 : 15;
+                        h1 += " " + fit(COL_NAMES[k], w);
+                        h2 += " " + fit(COL_UNITS[k], w);
+                    }
+                    std::fprintf(out, "%s\n%s\n", h1.c_str(), h2.c_str());
+                }
+                std::string row(4, ' ');
+                row += st;
+                for (int k = 0; k < 13; ++k) {
+                    if (!col_keep[k]) continue;
+                    if (k <= 1) row += " " + fixed12(vals[k]);
+                    else if (k == 7) { char b[32]; std::snprintf(b, sizeof b, " %15d", step); row += b; }
+                    else row += " " + sci15(vals[k]);
+                }
+                std::fprintf(out, "%s\n", row.c_str());
+                profile_hook();
             };
             // scale every equation by the largest entry of its row in B (the solution is unchanged)
             auto equilibrate = [&]() {
@@ -1666,6 +1841,10 @@ int main(int argc, char** argv) {
             }
             if (finished) exit_reason = steps.size() == 1 ? reason : "end_of_protocol";
             nsolve = n_done;
+            if (pf) {                                   // the last row's profile, if not already written
+                if (last_prof != n_rows - 1) write_profile();
+                std::fclose(pf);
+            }
             if (!p.restart_write.empty())
                 write_restart(p.restart_write, p.particle_model, t, mAhg, m.i_app, c, nj, xc, m.nl);
         }

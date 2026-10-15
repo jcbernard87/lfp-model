@@ -77,4 +77,7 @@ These are the default values in the original research code. The source line (`L�
 | (new) `rtol`, `atol` | 10⁻⁴, 10⁻⁴ | | — | adaptive: local error tolerances on the state (ln c, potentials in V, log-odds of θ) |
 | (new) `dt_min`, `dt_max` | 10⁻⁶, 0 | s | — | adaptive: step bounds; `dt_max = 0` means `write_interval` |
 | (new) `restart_read`, `restart_write` | `''` | | — | `&output`, corrected mode: start from, or write the final state to, a restart file (docs/protocol.md; #23) |
+| (new) `columns` | `''` | | — | `&output`, corrected mode: the time-series columns to write; `''` = all (docs/protocol.md; #22) |
+| (new) `profile_file`, `profile_vars` | `''` | | — | `&output`, corrected mode: write profiles against x to this file; their variables (`''` = all) |
+| (new) `profile_every`, `profile_times` | 0, `''` | , s | — | `&output`: a profile with every N-th output row; at the first row at or after each listed time |
 | anode kinetic constant | 10⁻⁶ | | L241 | Li-foil exchange current, output only |

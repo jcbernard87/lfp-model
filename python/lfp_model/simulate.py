@@ -59,6 +59,9 @@ class Result:
     exit_reason: str = ""
     steps: int = 0
     final_state: Optional[Union[np.ndarray, CrystalState]] = None   # CrystalState with particle_model = 'crystal'
+    columns: str = ""                             # the time-series columns to write ('' = all; lfp_model.output)
+    profiles: list = field(default_factory=list)  # [(t [s], x [um], {variable: values})] (lfp_model.output)
+    profile_vars: tuple = ()
 
     @property
     def array(self) -> np.ndarray:
@@ -68,9 +71,21 @@ class Result:
     def write(self, path) -> None:
         with open(path, "w") as fh:
             n = len(self.rows[0]) if self.rows else 0
+            if self.columns:
+                from . import output
+                header = (HEADER + HEADER_EXTRA + (HEADER_CRYSTAL if n > 10 else ()))[:n]
+                units = (UNITS + UNITS_EXTRA + (UNITS_CRYSTAL if n > 10 else ()))[:n]
+                chosen = output.choose(header[1:], self.columns, "output column")
+                keep = [0, 1] + [header.index(c) for c in chosen if c != "Time"]   # the state and time always
+                output.write_table(fh, header, units, self.rows, keep)
+                return
             fh.write(format_header(extended=n > 7, crystal=n > 10))
             for r in self.rows:
                 fh.write(format_row(r[0], r[1:]))
+
+    def write_profiles(self, path) -> None:
+        from . import output
+        output.write_profiles(path, self.profile_vars, self.profiles)
 
 
 def initial_state(p: Params) -> np.ndarray:
@@ -231,6 +246,54 @@ class Stepper:
             from .logmodel import LogModel
             self.model = LogModel(p)
         self.p, self.backend = p, backend
+        # profiles (lfp_model.output): written with every profile_every-th row, at the first row at or after each
+        # of profile_times, and with the last row
+        from . import output
+        self.profiles, self.n_rows, self.last_profiled = [], 0, -1
+        self.profile_times = output.times(p.profile_times) if p.profile_file else []
+        self.profile_vars = output.choose(self.profile_names(), p.profile_vars, "profile variable") \
+            if p.profile_file else []
+
+    def profile_names(self):
+        crystal = hasattr(self.model, "cm") or hasattr(self.model, "dV")
+        return ["c", "phi1", "phi2", "theta"] + (["theta_surf"] if crystal else [])
+
+    def profile(self, c, I):
+        """x [um] and the profile variables at every electrode node."""
+        m, p = self.model, self.p
+        el = m.electrode(c)
+        s = m.mesh.s
+        shift = foil_shift(p, el, I)
+        nan = np.full(p.nj, np.nan)
+        vals = {"c": p.c_bulk * np.exp(el[:, 0]), "phi2": el[:, 2] - shift}
+        phi1 = el[:, 1] - shift
+        phi1[:s] = np.nan
+        vals["phi1"] = phi1
+        if hasattr(c, "xc") or hasattr(c, "ca"):
+            th = m.cs(c) / m.cs_max
+            w = m.cm.V / m.cm.V.sum() if hasattr(c, "xc") else m.dV / m.dV.sum()
+            mean, surf = nan.copy(), nan.copy()
+            mean[m.nodes], surf[m.nodes] = th @ w, th[:, -1]
+            vals["theta"], vals["theta_surf"] = mean, surf
+        else:
+            th = 1.0 / (1.0 + np.exp(-el[:, 3]))
+            th[:s] = np.nan
+            vals["theta"] = th
+        return m.mesh.x * 1.0e4, vals
+
+    def _record_profile(self, t, c, I):
+        if not self.p.profile_file:
+            return
+        i = self.n_rows
+        self.n_rows += 1
+        due = self.p.profile_every > 0 and i % self.p.profile_every == 0
+        while self.profile_times and t >= self.profile_times[0] * (1.0 - 1.0e-12):
+            self.profile_times.pop(0)
+            due = True
+        if due:
+            x, vals = self.profile(c, I)
+            self.profiles.append((t, x, {v: vals[v] for v in self.profile_vars}))
+            self.last_profiled = i
 
     def initial_state(self):
         return self.model.initial_state()
@@ -270,6 +333,7 @@ class Stepper:
         return cell_voltage(self.p, self.model.electrode(c), I)
 
     def row(self, t, c, mAhg, I, k):
+        self._record_profile(t, c, I)
         r = _row(self.p, t, self.model.electrode(c), mAhg, I, k)
         if hasattr(c, "xc"):                     # crystal model: theta at the first and last crystal
             m = self.model
@@ -306,6 +370,14 @@ def _run_protocol(p: Params, *, backend: str, pivot: str, max_steps: Optional[in
         r = restart.read(p.restart_read, p.particle_model, stepper.restart_shapes())
         start = (stepper.from_restart(r["arrays"]), r["t"], r["mAhg"], r["I"])
     res = run_protocol(stepper, max_steps=max_steps, result=Result(), start=start)
+    res.columns = p.columns
+    if p.profile_file:
+        if stepper.last_profiled != stepper.n_rows - 1:        # the last row's state
+            t, _, I = res.end
+            x, vals = stepper.profile(res.final_state, I)
+            stepper.profiles.append((t, x, {v: vals[v] for v in stepper.profile_vars}))
+        res.profiles, res.profile_vars = stepper.profiles, tuple(stepper.profile_vars)
+        res.write_profiles(p.profile_file)
     if p.restart_write:
         t, mAhg, I = res.end
         restart.write(p.restart_write, p.particle_model, t, mAhg, I, stepper.restart_arrays(res.final_state))

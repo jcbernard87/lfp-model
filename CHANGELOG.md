@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Configurable output** (corrected mode, all three languages; #22): `columns` chooses the time-series columns; `profile_file` writes c, φ₁, φ₂ and θ (and the crystal or agglomerate surface θ) against x in one long table, with every `profile_every`-th output row, at `profile_times` and at the end; `profile_vars` chooses the variables. Off by default: the output is unchanged.
 - **Restart files** (corrected mode, all three languages; #23): `restart_write` writes the final state, time, capacity and current; `restart_read` starts a run from it. A continued run repeats the run it continues exactly (byte for byte in Fortran and C++); the implementations read each other's files.
 - **CI** (#27): every supported Python version (3.9-3.13), coverage in the run summary; the native-input test fixture checks every value it sets.
 
