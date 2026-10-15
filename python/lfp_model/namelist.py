@@ -30,7 +30,7 @@ GROUPS = {
     "numerics": ["fd_step", "newton_tol", "newton_max_iter", "mode", "dt_mode", "rtol", "atol", "dt_min", "dt_max"],
     "agglomerate": ["nja", "R_agg", "eps_agg", "tau_agg", "sigma_agg"],
     "protocol": ["steps", "cycles"],
-    "output": ["file", "write_interval"],
+    "output": ["file", "write_interval", "restart_read", "restart_write"],
 }
 
 # Values the original program stored from single-precision literals (deviation D-4).

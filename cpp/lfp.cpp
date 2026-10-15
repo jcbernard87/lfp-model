@@ -234,6 +234,7 @@ struct Params {
     double write_interval = 18.0;          // [s], corrected mode
     double kappa_bg = 1.0e-8;              // corrected: background (solvent) ionic conductivity [S/cm]
     std::string file = "Time_Voltage.txt";
+    std::string restart_read, restart_write;  // corrected mode: restart files (#23)
 };
 
 std::string lower(std::string s) {
@@ -274,6 +275,7 @@ Params read_input(const std::string& path) {
                                         {"newton_max_iter", &p.newton_max_iter}, {"cycles", &p.cycles},
                                         {"nj_crystal", &p.nj_crystal}, {"nja", &p.nja}};
     std::map<std::string, std::string*> strs = {{"mode", &p.mode}, {"file", &p.file}, {"steps", &p.steps},
+                                                {"restart_read", &p.restart_read}, {"restart_write", &p.restart_write},
                                                 {"dt_mode", &p.dt_mode},
                                                 {"particle_model", &p.particle_model},
                                                 {"crystal_shape", &p.crystal_shape}};
@@ -286,7 +288,7 @@ Params read_input(const std::string& path) {
         {"operation", {"c_rate", "phi1_init", "phi2_init", "cs_init", "t_max", "n_steps", "v_min", "v_max"}},
         {"numerics", {"fd_step", "newton_tol", "newton_max_iter", "mode", "dt_mode", "rtol", "atol", "dt_min", "dt_max"}},
         {"protocol", {"steps", "cycles"}},
-        {"output", {"file", "write_interval"}},
+        {"output", {"file", "write_interval", "restart_read", "restart_write"}},
         {"agglomerate", {"nja", "r_agg", "eps_agg", "tau_agg", "sigma_agg"}},
     };
     std::set<std::string> seen_groups;
@@ -417,6 +419,8 @@ struct Model {
         if (p.dt_mode != "fixed" && p.dt_mode != "adaptive")
             throw std::runtime_error("dt_mode must be one of ('fixed', 'adaptive'), got '" + p.dt_mode + "'");
         if (p.dt_mode == "adaptive" && faithful) throw std::runtime_error("dt_mode='adaptive' needs mode='corrected'");
+        if (faithful && (!p.restart_read.empty() || !p.restart_write.empty()))
+            throw std::runtime_error("restart files need mode='corrected'");
         if (faithful) {  // single-precision literals of the original (D-4)
             p.R = r32(p.R); p.c_bulk = r32(p.c_bulk); p.Q_th = r32(p.Q_th); p.M = r32(p.M); p.rho = r32(p.rho);
             p.phi1_init = r32(p.phi1_init); p.eps_sep = r32(p.eps_sep); p.eps_AM = r32(p.eps_AM);
@@ -1024,6 +1028,61 @@ struct AggModel {
     }
 };
 
+// ============================== restart files (#23; see restart.py in Python) ==============================
+// the state, time, capacity and last current, 17 significant digits (an exact round trip)
+void write_restart(const std::string& path, const std::string& model, double t, double mAhg, double I,
+                   const std::vector<double>& c, int nj, const std::vector<double>& xc, int nl) {
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) throw std::runtime_error("cannot write " + path);
+    std::fprintf(f, "# lfp-model restart 1\nmodel %s\nt %.16e\nmAhg %.16e\nI %.16e\n", model.c_str(), t, mAhg, I);
+    std::fprintf(f, "array c %d %d\n", nj, NV);
+    for (double v : c) std::fprintf(f, "%.16e\n", v);
+    if (!xc.empty()) {
+        std::fprintf(f, "array xc %d %d\n", nl, static_cast<int>(xc.size()) / nl);
+        for (double v : xc) std::fprintf(f, "%.16e\n", v);
+    }
+    std::fclose(f);
+}
+
+// start from a restart file: its state (into c, xc), time, capacity and current; the model and sizes must match
+void read_restart(const std::string& path, const std::string& model, std::vector<double>& c, int nj,
+                  std::vector<double>& xc, int nl, double& t, double& mAhg, double& I) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("cannot read " + path);
+    std::string line;
+    if (!std::getline(in, line) || line != "# lfp-model restart 1")
+        throw std::runtime_error(path + ": not a restart file of this model");
+    bool got_model = false, got_c = false, got_xc = xc.empty();
+    while (std::getline(in, line)) {
+        std::istringstream ls(line);
+        std::string word;
+        if (!(ls >> word)) continue;
+        if (word == "model") {
+            std::string mdl;
+            ls >> mdl;
+            if (mdl != model) throw std::runtime_error("restart file does not match the input: model " + mdl + ", input " + model);
+            got_model = true;
+        } else if (word == "t") { ls >> t; }
+        else if (word == "mAhg") { ls >> mAhg; }
+        else if (word == "I") { ls >> I; }
+        else if (word == "array") {
+            std::string name;
+            int n, k;
+            ls >> name >> n >> k;
+            std::vector<double>* a = name == "c" ? &c : (name == "xc" ? &xc : nullptr);
+            const bool ok = a && ((name == "c" && n == nj && k == NV) ||
+                                  (name == "xc" && n == nl && static_cast<std::size_t>(n) * k == xc.size()));
+            if (!ok) throw std::runtime_error("restart file does not match the input: array " + name);
+            for (double& v : *a) {
+                if (!std::getline(in, line)) throw std::runtime_error(path + ": truncated");
+                v = std::strtod(line.c_str(), nullptr);
+            }
+            (name == "c" ? got_c : got_xc) = true;
+        }
+    }
+    if (!got_model || !got_c || !got_xc) throw std::runtime_error("restart file does not match the input: missing entries");
+}
+
 // ============================== output ==============================
 std::string fixed12(double v) {
     char b[64];
@@ -1511,9 +1570,13 @@ int main(int argc, char** argv) {
                 return h / (h + hp) * std::sqrt(s / static_cast<double>(c.size() + xc.size()));
             };
 
+            double I_restart = 0.0;
+            if (!p.restart_read.empty())
+                read_restart(p.restart_read, p.particle_model, c, nj, xc, m.nl, t, mAhg, I_restart);
             double I = steps[0].kind == Kind::cc ? steps[0].C * m.i_1C : 0.0;
             m.i_app = I;
             write_row(true, 1);
+            if (!p.restart_read.empty() && steps[0].kind == Kind::cv) I = I_restart;  // as after the run it came from
             double last_write = t;
             std::string reason;
             int n_done = 0;
@@ -1603,6 +1666,8 @@ int main(int argc, char** argv) {
             }
             if (finished) exit_reason = steps.size() == 1 ? reason : "end_of_protocol";
             nsolve = n_done;
+            if (!p.restart_write.empty())
+                write_restart(p.restart_write, p.particle_model, t, mAhg, m.i_app, c, nj, xc, m.nl);
         }
         std::fclose(out);
         std::printf("%s run, C-rate %.17g: exit %s after %d steps; wrote %s\n", p.mode.c_str(), p.C_rate,

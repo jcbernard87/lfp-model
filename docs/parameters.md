@@ -76,4 +76,5 @@ These are the default values in the original research code. The source line (`L�
 | (new) `dt_mode` | `'fixed'` | | — | corrected mode (#18): `'adaptive'` chooses the time step from the local error estimate (docs/protocol.md) |
 | (new) `rtol`, `atol` | 10⁻⁴, 10⁻⁴ | | — | adaptive: local error tolerances on the state (ln c, potentials in V, log-odds of θ) |
 | (new) `dt_min`, `dt_max` | 10⁻⁶, 0 | s | — | adaptive: step bounds; `dt_max = 0` means `write_interval` |
+| (new) `restart_read`, `restart_write` | `''` | | — | `&output`, corrected mode: start from, or write the final state to, a restart file (docs/protocol.md; #23) |
 | anode kinetic constant | 10⁻⁶ | | L241 | Li-foil exchange current, output only |

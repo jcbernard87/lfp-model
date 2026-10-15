@@ -90,9 +90,13 @@ class Params:
     steps: str = ""                # empty: classic discharge at C_rate
     cycles: int = 1
     write_interval: float = 18.0   # [s]
+    restart_read: str = ""         # corrected mode: start from this restart file (#23); '' = the initial state
+    restart_write: str = ""        # corrected mode: write the final state to this restart file; '' = none
     mode: str = "faithful"
 
     def __post_init__(self):
+        if (self.restart_read or self.restart_write) and self.mode != "corrected":
+            raise ValueError("restart files need mode='corrected'")
         if self.dt_mode not in DT_MODES:
             raise ValueError(f"dt_mode must be one of {DT_MODES}, got {self.dt_mode!r}")
         if self.dt_mode == "adaptive" and self.mode != "corrected":

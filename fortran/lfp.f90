@@ -52,6 +52,7 @@ program lfp
     integer  :: cycles = 1
     real(dp) :: write_interval = 18.0_dp               ! [s], corrected mode
     character(len=256) :: file = 'Time_Voltage.txt'
+    character(len=512) :: restart_read = '', restart_write = ''   ! corrected mode: restart files (#23)
 
     namelist /cell/ L_cath_um, L_sep, nj, sep_node, eps, eps_AM, f_AM, eps_sep, tau_sep, bruggeman, nj_crystal
     real(dp) :: kappa_bg = 1.0e-8_dp                   ! corrected: background (solvent) ionic conductivity [S/cm]
@@ -63,7 +64,7 @@ program lfp
     namelist /numerics/ fd_step, newton_tol, newton_max_iter, mode, dt_mode, rtol, atol, dt_min, dt_max
     namelist /agglomerate/ nja, R_agg, eps_agg, tau_agg, sigma_agg
     namelist /protocol/ steps, cycles
-    namelist /output/ file, write_interval
+    namelist /output/ file, write_interval, restart_read, restart_write
 
     ! ---------------- derived quantities and mode switches ----------------
     logical  :: faithful
@@ -103,6 +104,8 @@ program lfp
     ! ---------------- time loop ----------------
     integer  :: ounit, nsolve
     integer  :: il, ia                            ! loop indices of the main program
+    logical  :: restarted = .false.               ! the run continues from restart_read
+    real(dp) :: I_restart = 0.0_dp                ! the restart's last current (a constant-voltage first step)
     real(dp) :: time, dt, mAhg
     character(len=1) :: state
     character(len=64) :: exit_reason
@@ -143,11 +146,17 @@ program lfp
     dt = t_max/real(n_steps, dp)
     exit_reason = 'max_steps'
 
+    if (faithful .and. (len_trim(restart_read) > 0 .or. len_trim(restart_write) > 0)) then
+        write(error_unit,'(A)') 'restart files need mode=''corrected'''
+        error stop 2
+    end if
     if (faithful) then
         call run_faithful()
     else
         call parse_protocol()
+        if (len_trim(restart_read) > 0) call read_restart(trim(restart_read))
         call run_protocol()
+        if (len_trim(restart_write) > 0) call write_restart(trim(restart_write))
     end if
 
     close(ounit)
@@ -378,6 +387,7 @@ contains
         if (skind(1) == K_CC) I = sC(1)*i_1C
         i_app = I
         call write_row_c(.true., 1)
+        if (restarted .and. skind(1) == K_CV) I = I_restart   ! as after the run the restart came from
         last_write = time
         nsteps_done = 0
         reason = ''
@@ -1184,6 +1194,88 @@ contains
         end do
         c = c_old
     end subroutine newton_step
+
+    ! =============================== restart files (#23; see restart.py in Python) ===============================
+    subroutine write_restart(path)
+        !! The state, time, capacity and last current, 17 significant digits (exact round trip).
+        character(len=*), intent(in) :: path
+        integer :: u, j, v, l
+        open(newunit=u, file=path, status='replace', action='write')
+        write(u,'(A)') '# lfp-model restart 1'
+        write(u,'(A)') 'model '//trim(particle_model)
+        write(u,'(A,ES24.16E3)') 't ', time
+        write(u,'(A,ES24.16E3)') 'mAhg ', mAhg
+        write(u,'(A,ES24.16E3)') 'I ', i_app
+        write(u,'(A,I0,A,I0)') 'array c ', nj, ' ', NV
+        do j = 1, nj
+            do v = 1, NV
+                write(u,'(ES24.16E3)') c(v,j)
+            end do
+        end do
+        if (crystal .or. agglom) then
+            write(u,'(A,I0,A,I0)') 'array xc ', nl, ' ', nxc
+            do l = 1, nl
+                do v = 1, nxc
+                    write(u,'(ES24.16E3)') xc(v,l)
+                end do
+            end do
+        end if
+        close(u)
+    end subroutine write_restart
+
+    subroutine read_restart(path)
+        !! Start from a restart file: its state, time, capacity and current; the model and sizes must match.
+        character(len=*), intent(in) :: path
+        character(len=1024) :: line
+        character(len=64) :: word, name, model
+        integer :: u, ios, n, m, j, v, l
+        logical :: got_c, got_xc
+        real(dp) :: val
+        open(newunit=u, file=path, status='old', action='read', iostat=ios)
+        if (ios /= 0) call restart_error('cannot read '//path)
+        read(u,'(A)', iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= '# lfp-model restart 1') call restart_error(path//': not a restart file of this model')
+        model = ''; got_c = .false.; got_xc = .false.
+        do
+            read(u,'(A)', iostat=ios) line
+            if (ios /= 0) exit
+            if (len_trim(line) == 0) cycle
+            read(line,*) word
+            select case (trim(word))
+            case ('model')
+                read(line,*) word, model
+                if (trim(model) /= trim(particle_model)) call restart_error('restart file does not match the input: model ' &
+                    //trim(model)//', input '//trim(particle_model))
+            case ('t')
+                read(line,*) word, val; time = val
+            case ('mAhg')
+                read(line,*) word, val; mAhg = val
+            case ('I')
+                read(line,*) word, val; I_restart = val
+            case ('array')
+                read(line,*) word, name, n, m
+                if (trim(name) == 'c') then
+                    if (n /= nj .or. m /= NV) call restart_error('restart file does not match the input: array c')
+                    read(u,*) ((c(v,j), v = 1, NV), j = 1, nj)
+                    got_c = .true.
+                else if (trim(name) == 'xc') then
+                    if (n /= nl .or. m /= nxc) call restart_error('restart file does not match the input: array xc')
+                    read(u,*) ((xc(v,l), v = 1, nxc), l = 1, nl)
+                    got_xc = .true.
+                end if
+            end select
+        end do
+        close(u)
+        if (len_trim(model) == 0 .or. .not. got_c .or. ((crystal .or. agglom) .and. .not. got_xc)) &
+            call restart_error('restart file does not match the input: missing entries')
+        restarted = .true.
+    end subroutine read_restart
+
+    subroutine restart_error(msg)
+        character(len=*), intent(in) :: msg
+        write(error_unit,'(A)') msg
+        error stop 2
+    end subroutine restart_error
 
     ! =============================== agglomerate model (docs/model.md section 13) ===============================
     subroutine agg_setup()
