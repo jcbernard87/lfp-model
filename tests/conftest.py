@@ -15,33 +15,45 @@ def _exe(env_name, default):
     return p if p.is_file() and os.access(p, os.X_OK) else None
 
 
+def native_input(*, C_rate=1.0, mode="faithful", name="out.txt", steps=None, **extra):
+    """input/default.nml with overrides, as text. `extra`: further input values (e.g. particle_model='crystal'),
+    set in their namelist group. Every value set appears exactly once in the text (a name later on the same line
+    as a new entry would otherwise override it)."""
+    from lfp_model.namelist import GROUPS
+    text = (ROOT / "input" / "default.nml").read_text()
+    for key, value in extra.items():
+        group = next((g for g, names in GROUPS.items() if key in names), None)
+        if group is None:
+            raise KeyError(f"{key!r} is not an input name")
+        val = f"'{value}'" if isinstance(value, str) else repr(value)
+        # the value wherever the name is set (also inside a comma-separated line), else a new entry in its
+        # group, else a new group
+        text, n = re.subn(rf"(?<!\w){key}[ \t]*=[ \t]*('[^']*'|[^,\s/!]+)", lambda m: f"{key} = {val}", text,
+                          count=1)
+        if n == 0 and f"&{group}\n" in text:
+            text = text.replace(f"&{group}\n", f"&{group}\n  {key} = {val}\n", 1)
+        elif n == 0:
+            text += f"&{group}\n  {key} = {val}\n/\n"
+    if steps:
+        text, n = re.subn(r"steps = '[^']*'", f"steps = '{steps}'", text)
+        assert n == 1
+    text = re.sub(r"C_rate = [0-9.]+", f"C_rate = {C_rate}", text)
+    text = re.sub(r"^(\s*)mode = '\w+'", lambda m: f"{m.group(1)}mode = '{mode}'", text, flags=re.M)
+    text = text.replace("file = 'Time_Voltage.txt'", f"file = '{name}'")
+    body = "\n".join(ln.split("!")[0] for ln in text.splitlines())
+    for key in list(extra) + ["C_rate", "mode", "steps", "file"]:
+        n = len(re.findall(rf"(?<!\w){key}[ \t]*=", body, flags=re.I))
+        assert n == 1, f"{key} is set {n} times in the input"
+    return text
+
+
 @pytest.fixture
 def run_native(tmp_path):
-    """Run a compiled implementation on the default input with overrides; return the output path."""
+    """Run a compiled implementation on the default input with overrides (native_input); return the output path."""
 
-    def _run(exe, *, C_rate=1.0, mode="faithful", name="out.txt", steps=None, **extra):
-        """`extra`: further input values (e.g. particle_model='crystal'), set in their namelist group."""
-        from lfp_model.namelist import GROUPS
-        text = (ROOT / "input" / "default.nml").read_text()
-        for key, value in extra.items():
-            group = next(g for g, names in GROUPS.items() if key in names)
-            val = f"'{value}'" if isinstance(value, str) else repr(value)
-            # the value wherever the name is set (also inside a comma-separated line), else a new entry in its
-            # group, else a new group (a name later on the same line would otherwise override a new line)
-            text, n = re.subn(rf"(?<!\w){key}[ \t]*=[ \t]*('[^']*'|[^,\s/!]+)", lambda m: f"{key} = {val}", text,
-                              count=1)
-            if n == 0 and f"&{group}\n" in text:
-                text = text.replace(f"&{group}\n", f"&{group}\n  {key} = {val}\n", 1)
-            elif n == 0:
-                text += f"&{group}\n  {key} = {val}\n/\n"
-        if steps:
-            text, n = re.subn(r"steps = '[^']*'", f"steps = '{steps}'", text)
-            assert n == 1
-        text = re.sub(r"C_rate = [0-9.]+", f"C_rate = {C_rate}", text)
-        text = re.sub(r"^(\s*)mode = '\w+'", lambda m: f"{m.group(1)}mode = '{mode}'", text, flags=re.M)
-        text = text.replace("file = 'Time_Voltage.txt'", f"file = '{name}'")
+    def _run(exe, *, name="out.txt", **kw):
         nml = tmp_path / f"in_{name}.nml"
-        nml.write_text(text)
+        nml.write_text(native_input(name=name, **kw))
         subprocess.run([str(exe), str(nml)], cwd=tmp_path, check=True, capture_output=True)
         return tmp_path / name
 

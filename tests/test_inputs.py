@@ -81,3 +81,20 @@ def test_a_quoted_path_with_slashes_is_one_value(fortran_exe, cpp_exe, tmp_path)
         assert r.returncode == 0 and out.exists(), (exe, r.stdout + r.stderr)
     p, extra = load(nml)
     assert extra["file"] == str(out) and p.write_interval == 30.0
+
+
+def test_fixture_values_reach_the_input(tmp_path):
+    """The native-input fixture sets every value it is given, also names that share a line with others in
+    default.nml (an earlier version left those at the default: the line set them again after the new entry)."""
+    from lfp_model.namelist import load
+    from .conftest import native_input
+    over = dict(nj=31, sep_node=12, eps=0.45, n_steps=7200, D=1.5e-6, write_interval=30.0, R_p=1.5e-5,
+                particle_model="agglomerate", nja=9, R_agg=4.0e-4, dt_mode="adaptive", rtol=1e-5)
+    nml = tmp_path / "in.nml"
+    nml.write_text(native_input(mode="corrected", C_rate=2.0, steps="cc C=2 t=60", **over))
+    p, _ = load(nml)
+    for k, v in over.items():
+        assert getattr(p, k) == v, k
+    assert (p.mode, p.C_rate, p.steps) == ("corrected", 2.0, "cc C=2 t=60")
+    with pytest.raises(KeyError):
+        native_input(not_a_name=1)
