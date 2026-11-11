@@ -21,6 +21,21 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.23029942
     description: Version 0.2.0
+  - type: doi
+    value: 10.5281/zenodo.23128563
+    description: Version 0.3.0
+  - type: doi
+    value: 10.5281/zenodo.23129052
+    description: Version 0.4.0
+  - type: doi
+    value: 10.5281/zenodo.23171496
+    description: Version 0.5.0
+  - type: doi
+    value: 10.5281/zenodo.23393192
+    description: Version 0.6.0
+  - type: doi
+    value: 10.5281/zenodo.24135831
+    description: Version 0.7.0
 repository-code: "https://github.com/jcbernard87/lfp-model"
 url: "https://github.com/jcbernard87/lfp-model"
 abstract: >-
